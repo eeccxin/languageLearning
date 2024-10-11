@@ -27,7 +27,7 @@ Go 语言是 Google 在 **2009 年 12 月**发布的编程语言，目前的 Go 
 
 这本书介绍的主要内容其实就是 **Go 语言内部的实现原理**，目前的大纲包含以下的八个章节，在编写的过程中还是会对内容的编排顺序和方式进行修改：
 
-![golang-internal](Go语言设计与实现.assets/afa64721a976e9d548f5b973241109db.png)
+![golang-internal](go语言设计与实现.assets/afa64721a976e9d548f5b973241109db.png)
 
 虽然文章的目录结构可能会改变，但是你一定会通过这本书了解到 Go 语言相关的以下内容：
 
@@ -46,7 +46,7 @@ Go 语言是 Google 在 **2009 年 12 月**发布的编程语言，目前的 Go 
 
 无论你是对目前书中不包含的 Go 语言特性的实现原理感兴趣，还是有其他的建议都可以在下面留言，欢迎持续关注本书的进展，谢谢。
 
-![wechat-account-qrcode](Go语言设计与实现.assets/32b916ab562494e6858bc9393dc256b4.png)
+![wechat-account-qrcode](go语言设计与实现.assets/32b916ab562494e6858bc9393dc256b4.png)
 
 本作品采用[知识共享署名-非商业性使用-禁止演绎 4.0 国际许可协议](http://creativecommons.org/licenses/by-nc-nd/4.0/)进行许可。
 
