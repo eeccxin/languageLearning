@@ -933,3 +933,973 @@ type (
 - https://en.wikipedia.org/wiki/Lookahead[↩︎](https://www.bookstack.cn/read/draveness-golang/a81e1b5a6b7b28bc.md#fnref:19)
 - 关于 Go 语言文法的讨论 https://groups.google.com/forum/#!msg/golang-nuts/jVjbH2-emMQ/UdZlSNhd3DwJ [↩︎](https://www.bookstack.cn/read/draveness-golang/a81e1b5a6b7b28bc.md#fnref:20)
 
+
+
+## 2.3 类型检查
+
+我们在上一节中介绍了 Golang 的第一个编译阶段 — 通过[词法和语法分析器](https://www.bookstack.cn/read/draveness-golang/a81e1b5a6b7b28bc.md)的解析得到了抽象语法树，在这里就会继续介绍编译器执行的下一个过程 — 类型检查。
+
+提到类型检查和编程语言的类型系统，很多人都会想到几个非常模糊并且难以区分和理解的术语：强类型、弱类型、静态类型和动态类型。这几个术语有的可能在并没有被广泛认同的明确定义，但是我们既然即将谈到 Go 语言编译器的类型检查过程，就不得不讨论一下这些『类型』的含义与异同。
+
+
+
+### 2.3.1 强弱类型
+
+[强类型和弱类型](https://en.wikipedia.org/wiki/Strong_and_weak_typing)[1](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:1)经常会被放在一起讨论，然而这两者并没有一个学术上的严格定义，作者以前也尝试对强弱类型这两个概念进行理解，但是查阅了很多资料之后却发现理解编程语言的类型系统反而更加困难，很多资料都是相互矛盾的、用词含糊不清，也没有足够权威的资料。
+
+![strong-and-weak-typing](go语言设计与实现.assets/c09812eb09f17a74f24492fbea269bcc.png)
+
+**图 2-10 强类型和弱类型**
+
+由于权威的定义的缺失，对于强弱类型来说，我们很多时候也只能根据现象和特性从直觉上进行判断 —— 强类型的编程语言在编译期间会有着更严格的类型限制，也就是编译器会在编译期间发现变量赋值、返回值和函数调用时的类型错误，而弱类型的语言在出现类型错误时可能会在运行时进行隐式的类型转换，在类型转换时可能会造成运行错误[2](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:2)。
+
+假如我们从上面的定义出发，我们就可以认为 Java、C# 等在编译期间进行类型检查的编程语言往往都是强类型的，同样地按照这个标准，Go 语言因为会在编译期间发现类型错误，所以也应该是强类型的编程语言。
+
+理解强弱类型这两个具有非常明确歧义并且定义不严格的概念是没有太多实际价值的，作为一种抽象的定义，我们使用它更多的时候是为了方便沟通和分类，这对于我们真正使用和理解编程语言可能没有什么帮助，相比没有明确定义的强弱类型，更应该被关注的应该是下面的这些问题：
+
+- 类型的转换是显式的还是隐式的？
+- 编译器会帮助我们推断变量的类型么？这些具体的问题在这种语境下其实更有价值，也希望各位读者能够减少和避免对强弱类型的争执。
+
+
+
+### 2.3.2 静态与动态类型
+
+静态类型和动态类型的编程语言其实也是两个不精确的表述，它们应该被称为使用[静态类型检查](https://en.wikipedia.org/wiki/Type_system#Static_type_checking)和[动态类型检查](https://en.wikipedia.org/wiki/Type_system#Dynamic_type_checking_and_runtime_type_information)的编程语言，这一小节会分别介绍两种类型检查的特点以及它们的区别。
+
+> 静态类型检查
+
+静态类型检查是基于对源代码的分析来确定运行程序类型安全的过程[3](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:3)，如果我们的代码能够通过静态类型检查，那么当前程序在一定程度上就满足了类型安全的要求，它也可以被看作是一种代码优化的方式，能够减少程序在运行时的类型检查。
+
+作为一个开发者来说，静态类型检查能够帮助我们在编译期间发现程序中出现的类型错误，一些动态类型的编程语言都会有社区提供的工具为这些编程语言加入静态类型检查，例如 JavaScript 的 [Flow](https://flow.org/)[4](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:4)，这些工具能够在编译期间发现代码中的类型错误。
+
+相信很多读者也都听过『动态类型一时爽，代码重构火葬场』[5](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:5)，使用很多编程语言的开发者一定对这句话深有体会，静态类型为代码在编译期间提供了一种约束，如果代码没有满足这种约束就没有办法通过编译器的检查。
+
+在重构时这种静态的类型检查能够帮助我们节省大量的时间并且避免一些遗漏的错误，但是对于仅使用动态类型检查的语言，就需要额外写大量的测试用例保证重构不会出现类型错误了，当然在这里并不是说测试不重要，我们写的**任何代码都应该有良好的测试**，这与语言没有太多的关系。
+
+> 动态类型检查
+
+动态类型检查就是在运行时确定程序类型安全的过程，**这个过程需要编程语言在编译时为所有的对象加入类型标签和信息，运行时就可以使用这些存储的类型信息来实现动态派发、向下转型、反射以及其他特性[6](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fn:6)。**
+
+这种类型检查的方式能够为工程师提供更多的操作空间，让我们能在运行时获取一些类型相关的上下文并根据对象的类型完成一些动态操作。
+
+只使用动态类型检查的编程语言就叫做动态类型编程语言，常见的动态类型编程语言就包括 JavaScript、Ruby 和 PHP，这些编程语言在使用上非常灵活也不需要经过编译器的编译，但是有问题的代码该出错还是出错并不会因为更加灵活就会减少错误。
+
+> 小结
+
+静态类型检查和动态类型检查其实并不是两种完全冲突和对立的特点，很多编程语言都会同时使用两种类型检查，Java 就同时使用了这两种检查的方法，不仅在编译期间对类型提前检查发现类型错误，还为对象添加了类型信息，这样能够在运行时使用反射根据对象的类型动态地执行方法减少了冗余代码。
+
+
+
+### 2.3.3 执行过程
+
+Go 语言的编译器不仅使用静态类型检查来保证程序运行的类型安全，还会在编程期引入类型信息，让工程师能够使用反射来判断参数和变量的类型，当我们想要将 `interface` 转换成具体类型时就会进行动态类型检查，如果无法发生转换就可能会造成程序崩溃。
+
+我们在这里还是会重点介绍编译期间的静态类型检查，在 [2.1 概述](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)中，我们曾经介绍过 Go 语言编译器主程序中的 [`Main`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/main.go#L144-L796) 函数，其中有一段是这样的：
+
+```go
+    for i := 0; i < len(xtop); i++ {
+        n := xtop[i]
+        if op := n.Op; op != ODCL && op != OAS && op != OAS2 && (op != ODCLTYPE || !n.Left.Name.Param.Alias) {
+            xtop[i] = typecheck(n, ctxStmt)
+        }
+    }
+    for i := 0; i < len(xtop); i++ {
+        n := xtop[i]
+        if op := n.Op; op == ODCL || op == OAS || op == OAS2 || op == ODCLTYPE && n.Left.Name.Param.Alias {
+            xtop[i] = typecheck(n, ctxStmt)
+        }
+    }
+    ...
+    checkMapKeys()
+```
+
+
+
+这段代码的执行过程可以分成两个部分，首先通过 [`src/cmd/compile/internal/gc/typecheck.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/gc/typecheck.go) 文件中的 `typecheck` 函数检查常量、类型、函数声明以及变量赋值语句的类型，然后使用 `checkMapKeys` 检查哈希中键的类型，我们会分几个部分对上述代码的实现原理进行分析。
+
+编译器类型检查的主要逻辑都在 `typecheck` 和 `typecheck1` 这两个函数中，其中 `typecheck` 中逻辑不是特别多，它的主要作用就做一些类型检查之前的准备工作。而核心的类型检查逻辑都在 [typecheck1](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/typecheck.go#L327-L2081) 函数中，这是由一个巨大的 switch/case 构成的 2000 行函数：
+
+```
+func typecheck1(n *Node, top int) (res *Node) {
+    switch n.Op {
+    case OTARRAY:
+        ...
+    case OTMAP:
+        ...
+    case OTCHAN:
+        ...
+    }
+    ...    
+    return n
+}
+```
+
+`typecheck1` 根据传入节点操作 `Op` 的不同，进入不同的分支，其中 `Op` 包括加减乘数等操作符、函数调用、方法调用等 150 多种，所有的节点操作 `Op` 都定义在 [`src/cmd/compile/internal/gc/syntax.go`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/syntax.go#L613-L800) 这个文件中，不过由于它的种类确实非常多，所以我们在这里只节选几个比较重要的案例深入分析一下。
+
+
+
+#### 切片 OTARRAY
+
+如果当前节点的操作类型是 `OTARRAY`，那么这个分支首先会对右节点，也就是切片或者数组中元素的类型进行类型检查：
+
+```
+    case OTARRAY:
+        r := typecheck(n.Right, Etype)
+        if r.Type == nil {
+            n.Type = nil
+            return n
+        }
+```
+
+然后该分支会根据当前节点的左节点不同，分三种不同的情况更新当前 `Node` 的类型，也就是三种不同的声明方式 `[]int`、`[…]int` 和 `[3]int`，第一种相对来说比较简单，这里会直接调用 `NewSlice` 函数：
+
+```
+        if n.Left == nil {
+            t = types.NewSlice(r.Type)
+```
+
+`NewSlice` 函数直接返回了一个 `TSLICE` 类型的结构体，中元素的类型信息 `r.Type` 也会存储在结构体中。当遇到 `[…]int` 这种形式的数组类型时，就会使用 `NewDDDArray` 函数创建一个存储着 `&Array{Elem: elem, Bound: -1}` 结构的 `TARRAY` 类型，`-1` 就代表当前的数组类型的大小需要进行推导：
+
+```
+        } else if n.Left.Op == ODDD {
+            if top&ctxCompLit == 0 {
+                if !n.Diag() {
+                    n.SetDiag(true)
+                    yyerror("use of [...] array outside of array literal")
+                }
+                n.Type = nil
+                return n
+            }
+            // t.Extra = &Array{Elem: r.Type, Bound: -1}
+            t = types.NewDDDArray(r.Type)
+```
+
+在最后，如果源代码中直接包含了数组的大小，就会调用 `NewArray` 函数初始化一个 `TARRAY` 类型的结构体，结构体存储着数组中元素的类型和数组的大小：
+
+```
+        } else {
+            n.Left = indexlit(typecheck(n.Left, ctxExpr))
+            l := n.Left
+            v := l.Val()
+            bound := v.U.(*Mpint).Int64()
+            // t.Extra = &Array{Elem: r.Type, Bound: bound}
+            t = types.NewArray(r.Type, bound)        }
+        n.Op = OTYPE
+        n.Type = t
+        n.Left = nil
+        n.Right = nil
+```
+
+三个不同的分支会分别处理数组和切片声明的不同形式，每一个分支都会更新 `Node` 结构体中存储的类型并修改抽象语法树中的内容。通过对这个片段的分析，我们发现数组的长度是类型检查期间确定的，而 `[…]int` 这种声明形式也只是 Go 语言为我们提供的语法糖。
+
+哈希 OTMAP
+
+对于哈希或者映射来说，编译器会对它的键值类型分别进行检查以验证它们类型的合法性：
+
+```
+    case OTMAP:
+        n.Left = typecheck(n.Left, Etype)
+        n.Right = typecheck(n.Right, Etype)
+        l := n.Left
+        r := n.Right
+        n.Op = OTYPE
+        n.Type = types.NewMap(l.Type, r.Type)
+        mapqueue = append(mapqueue, n)
+        n.Left = nil
+        n.Right = nil
+```
+
+与处理切片时几乎完全相同，这里会通过 [`NewMap`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/types/type.go#L521-L527) 创建一个新的 `TMAP` 类型并将哈希的键值类型都存储到该结构体中：
+
+```
+func NewMap(k, v *Type) *Type {
+    t := New(TMAP)
+    mt := t.MapType()
+    mt.Key = k
+    mt.Elem = v
+    return t
+}
+```
+
+代表当前哈希的节点最终也会被加入 `mapqueue` 队列，编译器会在后面的阶段对哈希键的类型进行再次检查，而检查键类型调用的其实就是上面提到的 `checkMapKeys` 函数：
+
+```
+func checkMapKeys() {
+    for _, n := range mapqueue {
+        k := n.Type.MapType().Key
+        if !k.Broke() && !IsComparable(k) {
+            yyerrorl(n.Pos, "invalid map key type %v", k)
+        }
+    }
+    mapqueue = nil
+}
+```
+
+该函数会遍历 `mapqueue` 队列中等待检查的节点，判断这些类型能否作为哈希的键，如果当前类型不合法就会在类型检查的阶段直接报错中止整个检查的过程。
+
+#### 关键字 OMAKE
+
+最后要介绍的其实就是 Go 语言中很常见的内置函数 `make`，在类型检查阶段之前，无论是创建切片、哈希还是 Channel 用的都是 `make` 关键字，但是在类型检查阶段就会根据创建的类型将 `make` 替换成本的函数，后面[生成中间代码](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)的过程就不再会处理 `OMAKE` 类型的节点了，而是会根据这里生成的更加细分的操作类型进行处理：
+
+![golang-keyword-make](go语言设计与实现.assets/091a5fa198f55d436909c85c71e0e9c3-172863322378123.png)
+
+**图 2-4 类型检查阶段对 make 进行改写**
+
+这里会先对关键字 `make` 的第一个参数，也就是类型进行检查并类型的不同进入不同的分支，切片分支 `TSLICE`、哈希分支 `TMAP` 和 Channel 分支 `TCHAN`：
+
+```
+    case OMAKE:
+        args := n.List.Slice()
+        n.List.Set(nil)
+        l := args[0]
+        l = typecheck(l, Etype)
+        t := l.Type
+        i := 1
+        switch t.Etype {
+        case TSLICE:
+            // ...
+        case TMAP:
+            // ...
+        case TCHAN:
+            // ...
+        }
+        n.Type = t
+```
+
+如果 `make` 的第一个参数是切片类型，那么就会从参数中获取切片的长度 `len` 和容量 `cap` 并对这两个参数进行校验，其中包括：
+
+- 切片的长度参数是否被传入；
+- 切片的长度必须要小于或者等于切片的容量；
+
+```
+        case TSLICE:
+            if i >= len(args) {
+                yyerror("missing len argument to make(%v)", t)
+                n.Type = nil
+                return n
+            }
+            l = args[i]
+            i++
+            l = typecheck(l, ctxExpr)
+            var r *Node
+            if i < len(args) {
+                r = args[i]
+                i++
+                r = typecheck(r, ctxExpr)
+            }
+            if Isconst(l, CTINT) && r != nil && Isconst(r, CTINT) && l.Val().U.(*Mpint).Cmp(r.Val().U.(*Mpint)) > 0 {
+                yyerror("len larger than cap in make(%v)", t)
+                n.Type = nil
+                return n
+            }
+            n.Left = l
+            n.Right = r
+            n.Op = OMAKESLICE
+```
+
+除了对参数的数量和合法性进行校验，这段代码最后会将当前节点的操作 `Op` 改成 `OMAKESLICE`，方便后面编译阶段的处理。
+
+第二种情况就是 `make` 的第一个参数是 `map` 类型，在这种情况下，第二个可选的参数就是哈希的初始大小，在默认情况下它的大小是 0，当前分支最后也会改变当前节点的 `Op` 属性：
+
+```
+        case TMAP:
+            if i < len(args) {
+                l = args[i]
+                i++
+                l = typecheck(l, ctxExpr)
+                l = defaultlit(l, types.Types[TINT])
+                if !checkmake(t, "size", l) {
+                    n.Type = nil
+                    return n
+                }
+                n.Left = l
+            } else {
+                n.Left = nodintconst(0)
+            }
+            n.Op = OMAKEMAP
+```
+
+
+
+`make` 内置函数能够初始化的最后一种结构就是 [Channel](https://www.bookstack.cn/read/draveness-golang/c666731d5f1a2820.md) 了，从下面的代码我们可以发现第二个参数表示的就是该 Channel 的缓冲区大小，如果不存在第二个参数，那么就会创建缓冲区大小为 0 的 Channel：
+
+```
+        case TCHAN:
+            l = nil
+            if i < len(args) {
+                l = args[i]
+                i++
+                l = typecheck(l, ctxExpr)
+                l = defaultlit(l, types.Types[TINT])
+                if !checkmake(t, "buffer", l) {
+                    n.Type = nil
+                    return n
+                }
+                n.Left = l
+            } else {
+                n.Left = nodintconst(0)
+            }
+            n.Op = OMAKECHAN
+```
+
+在类型检查的过程中，无论 `make` 的第一个参数是什么类型，都会对当前节点的 `Op` 类型进行修改并且对传入参数的合法性进行一定的验证。
+
+
+
+### 2.3.4 小结
+
+类型检查是 Go 语言编译的第二个阶段，在词法和语法分析之后我们得到了每个文件对应的抽象语法树，随后的类型检查会遍历抽象语法树中的节点，对每个节点的类型进行检验，找出其中存在的语法错误，在这个过程中也可能会对抽象语法树进行改写，这不仅能够去除一些不会被执行的代码、对代码进行优化以提高执行效率，而且也会修改 `make`、`new` 等关键字对应节点的操作类型。
+
+`make` 和 `new` 这些内置函数其实并不直接对应某些函数的实现，它们会在编译期间被转换成真正存在的其他函数，我们在下一节[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)中会介绍编译器对它们做了什么。
+
+------
+
+- Strong and weak typing https://en.wikipedia.org/wiki/Strong_and_weak_typing[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:1)
+- Weak And Strong Typing https://wiki.c2.com/?WeakAndStrongTyping[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:2)
+- https://en.wikipedia.org/wiki/Type_system#Static_type_checking[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:3)
+- JavaScript 静态检查工具 https://flow.org/[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:4)
+- 为什么说“动态类型一时爽，代码重构火葬场”？ https://www.zhihu.com/question/30072490[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:5)
+- https://en.wikipedia.org/wiki/Type_system#Dynamic_type_checking_and_runtime_type_information[↩︎](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md#fnref:6)
+
+
+
+## 2.4 中间代码生成
+
+前两节介绍的[词法与语法分析](https://www.bookstack.cn/read/draveness-golang/a81e1b5a6b7b28bc.md)以及[类型检查](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md)两个部分都属于编译器前端，它们负责对源代码进行分析并检查其中存在的词法和语法错误，经过这两个阶段生成的抽象语法树已经几乎不存在结构上的错误了，从这一节开始就进入了编译器后端的工作 —— 中间代码生成。
+
+### 2.4.1 概述
+
+[中间代码](https://en.wikipedia.org/wiki/Intermediate_representation)是指一种应用于抽象机器的编程语言，它设计的目的，是用来帮助我们分析计算机程序。在编译的过程中，编译器会在将源代码转换成目标机器上机器码的过程中，先把源代码转换成一种中间的表述形式[1](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md#fn:1)。
+
+![intermediate-representation](go语言设计与实现.assets/5a43582b0327f01696abaaf3fe71c52b.png)
+
+**图 2-12 源代码、中间代码和机器码**
+
+很多读者可能认为中间代码没有太多价值，我们也可以直接将源代码翻译成目标语言，这样就能省略编译的步骤，这种看起来可行的办法实际上有很多问题，它忽略了编译器需要面对的复杂场景，很多编译器可能需要将一种源代码翻译成多种机器码，想要在高级的编程语言上直接进行翻译是比较困难的，但是我们使用中间代码就可以将我们的问题简化：
+
+- 将编程语言直接翻译成机器码的过程拆成两个简单步骤 —— 中间代码生成和机器码生成；
+- 中间代码是一种更接近机器语言的表示形式，对中间代码的优化和分析相比直接分析高级编程语言更容易；Go 语言编译器的中间代码具有静态单赋值（SSA）的特性，我们在介绍 [Go 语言编译过程](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)中曾经介绍过静态单赋值，对这个特性不了解的读者可以回到上面的章节阅读相关的内容。
+
+我们再来回忆一下编译阶段入口的主函数 [`Main`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/main.go#L144-L796) 中关于中间代码生成的部分，在这一段代码中会初始化 SSA 生成的配置，在配置初始化结束之后会调用 `funccompile` 对函数进行编译：
+
+```
+func Main(archInit func(*Arch)) {
+    // ...
+    initssaconfig()
+    for i := 0; i < len(xtop); i++ {
+        n := xtop[i]
+        if n.Op == ODCLFUNC {
+            funccompile(n)
+        }
+    }
+    compileFunctions()
+}
+```
+
+这一节将分别介绍配置的初始化以及函数编译两部分内容，我们会以 `initssaconfig` 和 `funccompile` 这两个函数作为入口来分析中间代码生成的具体过程和实现原理。
+
+### 2.4.2 配置初始化
+
+SSA 配置的初始化过程其实就是做中间代码生成之前的准备工作，在这个过程中我们会缓存可能用到的类型指针、初始化 SSA 配置和一些之后会调用的运行时函数，例如：用于处理 `defer` 关键字的 `deferproc`、用于创建 Goroutine 的 `newproc` 和扩容切片的 `growslice` 等，除此之外还会根据当前的目标设备初始化特定的 ABI[2](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md#fn:2)。我们以 [`initssaconfig`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L39-L172) 作为入口开始分析配置初始化的过程。
+
+```
+func initssaconfig() {
+    types_ := ssa.NewTypes()
+    _ = types.NewPtr(types.Types[TINTER])                             // *interface{}
+    _ = types.NewPtr(types.NewPtr(types.Types[TSTRING]))              // **string
+    _ = types.NewPtr(types.NewPtr(types.Idealstring))                 // **string
+    _ = types.NewPtr(types.NewSlice(types.Types[TINTER]))             // *[]interface{}
+    ..
+    _ = types.NewPtr(types.Errortype)                                 // *error
+```
+
+
+
+这个函数的执行过程总共可以被分成三个部分，首先就是调用 [`NewTypes`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/ssa/config.go#L81-L85) 初始化一个新的 `Types` 结构体并调用 `NewPtr` 函数缓存类型的信息，`Types` 结构体中存储了所有 Go 语言中基本类型对应的指针，比如 `Bool`、`Int8`、以及 `String` 等。
+
+![golang-type-and-pointer](go语言设计与实现.assets/324f612787109de296376b6d78c9adb8.png)
+
+**图 2-12 类型和类型指针**
+
+[`NewPtr`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/types/type.go#L535-L555) 函数的主要作用就是根据类型生成指向这些类型的指针，同时它会根据编译器的配置将生成的指针类型缓存在当前类型中，优化类型指针的获取效率：
+
+```
+func NewPtr(elem *Type) *Type {
+    if t := elem.Cache.ptr; t != nil {
+        if t.Elem() != elem {
+            Fatalf("NewPtr: elem mismatch")
+        }
+        return t
+    }
+    t := New(TPTR)
+    t.Extra = Ptr{Elem: elem}
+    t.Width = int64(Widthptr)
+    t.Align = uint8(Widthptr)
+    if NewPtrCacheEnabled {
+        elem.Cache.ptr = t
+    }
+    return t
+}
+```
+
+配置初始化的第二步就是根据当前的 CPU 架构初始化 SSA 配置 `ssaConfig`，我们会向 `NewConfig` 函数传入目标机器的 CPU 架构、上述代码初始化的 `Types` 结构体、上下文信息和 Debug 配置：
+
+```
+    ssaConfig = ssa.NewConfig(thearch.LinkArch.Name, *types_, Ctxt, Debug['N'] == 0)
+```
+
+[`NewConfig`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/ssa/config.go#L197-L367) 会根据传入的 CPU 架构设置用于生成中间代码和机器码的函数，当前编译器使用的指针、寄存器大小、可用寄存器列表、掩码等编译选项：
+
+```
+func NewConfig(arch string, types Types, ctxt *obj.Link, optimize bool) *Config {
+    c := &Config{arch: arch, Types: types}
+    c.useAvg = true
+    c.useHmul = true
+    switch arch {
+    case "amd64":
+        c.PtrSize = 8
+        c.RegSize = 8
+        c.lowerBlock = rewriteBlockAMD64
+        c.lowerValue = rewriteValueAMD64
+        c.registers = registersAMD64[:]
+        ...
+    case "arm64":
+    ...
+    case "wasm":
+    default:
+        ctxt.Diag("arch %s not implemented", arch)
+    }
+    c.ctxt = ctxt
+    c.optimize = optimize
+    // ...
+    return c
+}
+```
+
+所有的配置项一旦被创建，在整个编译期间都是只读的并且被全部编译阶段共享，也就是中间代码生成和机器码生成这两部分都会使用这一份配置完成自己的工作。在 `initssaconfig` 方法调用的最后，会初始化一些编译器会用到的 Go 语言运行时的函数：
+
+```
+    assertE2I = sysfunc("assertE2I")
+    assertE2I2 = sysfunc("assertE2I2")
+    assertI2I = sysfunc("assertI2I")
+    assertI2I2 = sysfunc("assertI2I2")
+    deferproc = sysfunc("deferproc")
+    Deferreturn = sysfunc("deferreturn")
+    ...
+```
+
+这些函数会在对应的 runtime 包结构体 `Pkg` 中创建一个新的符号 `obj.LSym`，表示上述的方法已经被注册到运行时 runtime 包中，我们在后面的中间代码生成中直接使用这些方法，我们在这里看到的 `deferproc` 和 `deferreturn` 就是 Go 语言用于实现 `defer` 关键字的运行时函数，你能在后面的章节 [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md) 中了解更多内容。
+
+
+
+### 2.4.3 遍历和替换
+
+在生成中间代码之前，我们还需要对抽象语法树中节点的一些元素进行替换，这个替换的过程就是通过 `walk` 和很多以 `walk` 开头的相关函数实现的，简单展示几个相关函数的签名：
+
+```
+func walk(fn *Node)
+func walkappend(n *Node, init *Nodes, dst *Node) *Node
+...
+func walkrange(n *Node) *Node
+func walkselect(sel *Node)
+func walkselectcases(cases *Nodes) []*Node
+func walkstmt(n *Node) *Node
+func walkstmtlist(s []*Node)
+func walkswitch(sw *Node)
+```
+
+**这些用于遍历抽象语法树的函数会将一些关键字和内建函数转换成函数调用**，例如： `panic`、`recover` 这两个内建函数就会被在 `walkXXX` 中被转换成 `gopanic` 和 `gorecover` 两个真正存在的函数，而关键字 `new` 也会在这里被转换成对 `newobject` 函数的调用。
+
+
+
+![golang-keyword-and-builtin-mapping](go语言设计与实现.assets/dadd66f00a53f00d419e014fd6c83301.png)
+
+**图 2-13 关键字和操作符和运行时函数的映射**
+
+上图是从关键字或内建函数到其他实际存在的运行时函数的映射，包括 Channel、哈希相关的操作、用于创建结构体对象的 `make`、`new` 关键字以及一些控制流中的关键字 `select` 等。转换后的全部函数都属于运行时 `runtime` 包，我们能在 [`src/cmd/compile/internal/gc/builtin/runtime.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/gc/builtin/runtime.go) 文件中找到函数对应的签名和定义。
+
+```
+func makemap64(mapType *byte, hint int64, mapbuf *any) (hmap map[any]any)
+func makemap(mapType *byte, hint int, mapbuf *any) (hmap map[any]any)
+func makemap_small() (hmap map[any]any)
+func mapaccess1(mapType *byte, hmap map[any]any, key *any) (val *any)
+...
+func makechan64(chanType *byte, size int64) (hchan chan any)
+func makechan(chanType *byte, size int) (hchan chan any)
+...
+```
+
+[`src/cmd/compile/internal/gc/builtin/runtime.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/gc/builtin/runtime.go) 文件中代码的作用只是让编译器能够找到对应符号的函数定义而已，真正的函数实现都在另一个 [`src/runtime`](https://github.com/golang/go/tree/master/src/runtime) 包中。简单总结一下，编译器会将 Go 语言关键字转换成 `runtime` 包中的函数，也就是说关键字和内置函数的功能是由语言的编译器和运行时共同完成的。
+
+我们简单了解一下遍历节点时几个 Channel 操作是如何转换成运行时对应方法的，首先介绍向 Channel 中发送消息或者从 Channel 中接受消息两个操作，编译器会分别使用 `OSEND` 和 `ORECV` 表示发送和接收消息两个操作，在 [`walkexpr`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/walk.go#L439-L1532) 函数中会根据节点类型的不同进入不同的分支：
+
+```
+func walkexpr(n *Node, init *Nodes) *Node {
+    ...
+    case OSEND:
+        n1 := n.Right
+        n1 = assignconv(n1, n.Left.Type.Elem(), "chan send")
+        n1 = walkexpr(n1, init)
+        n1 = nod(OADDR, n1, nil)
+        n = mkcall1(chanfn("chansend1", 2, n.Left.Type), nil, init, n.Left, n1)
+    ...
+}
+```
+
+当遇到 `OSEND` 操作时，会使用 `mkcall1` 创建一个操作为 `OCALL` 的节点，这个节点中包含当前调用的函数 `chansend1` 和几个参数，新的 `OCALL` 节点会替换当前的 `OSEND` 节点，这也就完成了对 `OSEND` 子树的改写。
+
+
+
+![golang-ocall-node](go语言设计与实现.assets/4b961c6fe19eb34320d1aee1309a8bef.png)
+
+**图 2-14 改写后的 Channel 发送操作**
+
+在中间代码生成的阶段遇到 `ORECV` 操作时，编译器的处理与遇到 `OSEND` 时相差无几，我们也只是将 `chansend1` 换成了 `chanrecv1`，其他的参数没有发生太大的变化：
+
+```
+        n = mkcall1(chanfn("chanrecv1", 2, n.Left.Type), nil, &init, n.Left, nodnil())
+```
+
+使用 `close` 关键字的 `OCLOSE` 操作也会在 `walkexpr` 函数中被转换成调用 `closechan` 的 `OCALL` 节点：
+
+```
+func walkexpr(n *Node, init *Nodes) *Node {
+    ...
+    case OCLOSE:
+        fn := syslook("closechan")
+        fn = substArgTypes(fn, n.Left.Type)
+        n = mkcall1(fn, nil, init, n.Left)
+    ...
+}
+```
+
+
+
+对于 Channel 的这些内置操作都会在编译期间就转换成几个运行时执行的函数，很多人都想要了解 Channel 底层的实现，但是并不知道函数的入口，经过这里的分析我们就知道`chanrecv1`、`chansend1` 和 `closechan` 几个函数分别实现了 Channel 的发送、接受和关闭操作。
+
+2.4.4 SSA 生成
+
+经过 `walk` 系列函数的处理之后，AST 的抽象语法树就不再会改变了，Go 语言的编译器会使用 [`compileSSA`](https://github.com/golang/go/blob/06b12e660c239541c973ea9340f00455b9c5a266/src/cmd/compile/internal/gc/pgen.go#L297-L326) 函数将抽象语法树转换成中间代码，我们可以先看一下该函数的简要实现：
+
+```
+func compileSSA(fn *Node, worker int) {
+    f := buildssa(fn, worker)
+    pp := newProgs(fn, worker)
+    genssa(f, pp)
+    pp.Flush()
+}
+```
+
+`buildssa` 就是用来具有 SSA 特性的中间代码的函数，我们可以使用命令行工具来观察当前中间代码的生成过程，假设我们有以下的 Go 语言源代码，其中只包含一个非常简单的 `hello` 函数：
+
+```
+package hello
+func hello(a int) int {
+    c := a + 2
+    return c
+}
+```
+
+我们可以使用 `GOSSAFUNC` 环境变量构建上述代码并获取从源代码到最终的中间代码经历的几十次迭代，所有的数据都被存储到了 `ssa.html` 文件中：
+
+```
+$ GOSSAFUNC=hello go build hello.go
+# command-line-arguments
+dumped SSA to ./ssa.html
+```
+
+
+
+这个文件中包含源代码对应的抽象语法树、几十个版本的中间代码以及最终生成的 SSA，在这里截取文件中的一部分为大家展示一下，让各位读者对这个文件中的内容有更具体的印象：
+
+![ssa-htm](go语言设计与实现.assets/b2b28676d2373310221f9989a8655bfd.png)
+
+**图 2-15 SSA 中间代码生成过程**
+
+如上图所示，其中最左侧就是源代码，中间是源代码生成的抽象语法树，最右侧是生成的第一轮中间代码，后面还有几十轮，感兴趣的读者可以自己尝试编译一下。`hello` 函数对应的抽象语法树会包含当前函数的 `Enter`、`NBody` 和 `Exit` 三个属性，输出这些属性的工作是由下面的函数 [`buildssa`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L281-L451) 完成的，你能从这个简化的逻辑中看到上述输出的影子：
+
+```
+func buildssa(fn *Node, worker int) *ssa.Func {
+    name := fn.funcname()
+    var astBuf *bytes.Buffer
+    var s state
+    fe := ssafn{
+        curfn: fn,
+        log:   printssa && ssaDumpStdout,
+    }
+    s.curfn = fn
+    s.f = ssa.NewFunc(&fe)
+    s.config = ssaConfig
+    s.f.Type = fn.Type
+    s.f.Config = ssaConfig
+    ...
+    s.stmtList(fn.Func.Enter)
+    s.stmtList(fn.Nbody)
+    ssa.Compile(s.f)
+    return s.f
+}
+```
+
+`ssaConfig` 就是我们在这里的第一小节初始化的结构体，其中包含了与 CPU 架构相关的函数和配置，随后的中间代码生成其实也分成两个阶段，第一个阶段是使用 `stmtList` 以及相关函数将抽象语法树转换成中间代码，第二个阶段会调用 [`src/cmd/compile/internal/ssa`](https://github.com/golang/go/tree/master/src/cmd/compile/internal/ssa) 包的 [`Compile`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/ssa/compile.go#L29-L155) 函数对 SSA 中间代码进行多轮的迭代和转换。
+
+
+
+#### AST 到 SSA
+
+`stmtList` 方法的主要功能就是为传入数组中的每一个节点调用 [`stmt`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L1023-L1502) 方法，在这个方法中编译器会根据节点操作符的不同将当前 AST 转换成对应的中间代码：
+
+```
+func (s *state) stmt(n *Node) {
+    ...
+    switch n.Op {
+    case OCALLMETH, OCALLINTER:
+        s.call(n, callNormal)
+        if n.Op == OCALLFUNC && n.Left.Op == ONAME && n.Left.Class() == PFUNC {
+            if fn := n.Left.Sym.Name; compiling_runtime && fn == "throw" ||
+                n.Left.Sym.Pkg == Runtimepkg && (fn == "throwinit" || fn == "gopanic" || fn == "panicwrap" || fn == "block" || fn == "panicmakeslicelen" || fn == "panicmakeslicecap") {
+                m := s.mem()
+                b := s.endBlock()
+                b.Kind = ssa.BlockExit
+                b.SetControl(m)
+            }
+        }
+    case ODEFER:
+        s.call(n.Left, callDefer)
+    case OGO:
+        s.call(n.Left, callGo)
+    ...
+    }
+}
+```
+
+从上面节选的代码中我们会发现，在遇到函数调用、方法调用、使用 defer 或者 go 关键字时都会执行 [`call`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L4324-L4517) 生成调用函数的 SSA 节点，这些在开发者看来不同的概念在编译器中都会被实现成静态的函数调用，上层的关键字和方法其实都是语言为我们提供的**语法糖**：
+
+```
+func (s *state) call(n *Node, k callKind) *ssa.Value {
+    ...
+    var call *ssa.Value
+    switch {
+    case k == callDefer:
+        call = s.newValue1A(ssa.OpStaticCall, types.TypeMem, deferproc, s.mem())
+    case k == callGo:
+        call = s.newValue1A(ssa.OpStaticCall, types.TypeMem, newproc, s.mem())
+    case sym != nil:
+        call = s.newValue1A(ssa.OpStaticCall, types.TypeMem, sym.Linksym(), s.mem())
+    ..
+    }
+    ...
+}
+```
+
+首先，从 AST 到 SSA 的转化过程中，编译器会生成将函数调用的参数放到栈上的中间代码，处理参数之后才会生成一条运行函数的命令 `ssa.OpStaticCall`：
+
+- 如果这里使用的是 defer 关键字，就会插入 `deferproc` 函数；
+- 如果使用 go 创建新的 Goroutine 时会插入 `newproc` 函数符号；
+- 在遇到其他情况时会插入表示普通函数对应的符号；[`src/cmd/compile/internal/gc/ssa.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/gc/ssa.go) 这个拥有将近 7000 行代码的文件包含用于处理不同节点的各种方法，编译器会根据节点类型的不同在一个巨型 switch 语句处理不同的情况，这也是我们在编译器这种独特的场景下才能看到的现象。
+
+```
+compiling hello
+hello func(int) int
+  b1:
+    v1 = InitMem <mem>
+    v2 = SP <uintptr>
+    v3 = SB <uintptr> DEAD
+    v4 = LocalAddr <*int> {a} v2 v1 DEAD
+    v5 = LocalAddr <*int> {~r1} v2 v1
+    v6 = Arg <int> {a}
+    v7 = Const64 <int> [0] DEAD
+    v8 = Const64 <int> [2]
+    v9 = Add64 <int> v6 v8 (c[int])
+    v10 = VarDef <mem> {~r1} v1
+    v11 = Store <mem> {int} v5 v9 v10
+    Ret v11
+```
+
+上述代码就是在这个过程生成的，你可以看到中间代码主体中的每一行其实都定义了一个新的变量，这也就是我们在前面提到的具有静态单赋值（SSA）特性的中间代码，如果你使用 `GOSSAFUNC=hello go build hello.go` 命令亲自尝试一下会对这种中间代码有更深的印象。
+
+
+
+#### 多轮转换
+
+虽然我们在 `stmt` 以及相关方法中生成了 SSA 中间代码，但是这些中间代码仍然需要编译器进行优化以去掉无用代码并对操作数进行精简，编译器对中间代码的优化过程都是由 [`src/cmd/compile/internal/ssa`](https://github.com/golang/go/tree/master/src/cmd/compile/internal/ssa) 包的 [`Compile`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/ssa/compile.go#L29-L155) 函数执行的：
+
+```
+func Compile(f *Func) {
+    if f.Log() {
+        f.Logf("compiling %s\n", f.Name)
+    }
+    phaseName := "init"
+    for _, p := range passes {
+        f.pass = &p
+        p.fn(f)
+    }
+    phaseName = ""
+}
+```
+
+这是删除了很多打印日志和性能分析功能的 `Compile` 函数，SSA 需要经历的多轮处理也都保存在了 `passes` 变量中，这个变量中存储了每一轮处理的名字、使用的函数以及表示是否必要的 `required` 字段：
+
+```
+var passes = [...]pass{
+    {name: "number lines", fn: numberLines, required: true},
+    {name: "early phielim", fn: phielim},
+    {name: "early copyelim", fn: copyelim},
+    ...
+    {name: "loop rotate", fn: loopRotate},
+    {name: "stackframe", fn: stackframe, required: true},
+    {name: "trim", fn: trim},
+}
+```
+
+目前的编译器总共引入了将近 50 个需要执行的过程，我们能在 `GOSSAFUNC=hello go build hello.go` 命令生成的文件中看到每一轮处理后的中间代码，例如最后一个 `trim` 阶段就生成了如下的 SSA 代码：
+
+```
+  pass trim begin
+  pass trim end [738 ns]
+hello func(int) int
+  b1:
+    v1 = InitMem <mem>
+    v10 = VarDef <mem> {~r1} v1
+    v2 = SP <uintptr> : SP
+    v6 = Arg <int> {a} : a[int]
+    v8 = LoadReg <int> v6 : AX
+    v9 = ADDQconst <int> [2] v8 : AX (c[int])
+    v11 = MOVQstore <mem> {~r1} v2 v9 v10
+    Ret v11
+```
+
+
+
+经过将近 50 轮处理的中间代码相比处理之前已经有了非常大的改变，执行效率会有比较大的提升，多轮的处理已经包含了一些机器特定的修改，包括根据目标架构对代码进行改写，不过这里就不会展开介绍每一轮处理的具体内容了。
+
+### 2.4.5 小结
+
+中间代码的生成过程其实就是从 AST 抽象语法树到 SSA 中间代码的转换过程，在这期间会对语法树中的关键字在进行一次改写，改写后的语法树会经过多轮处理转变成最后的 SSA 中间代码，这里的代码大都是巨型的 switch 语句、复杂的函数以及调用栈，阅读和分析起来也非常困难。
+
+很多 Go 语言中的关键字和内置函数都是在这个阶段被转换成运行时包中方法的，作者在后面的章节会从具体的语言关键字和内置函数的角度介绍一些数据结构和内置函数的实现。
+
+- 中间代码，也被翻译成中间表示，即 Intermediate representation https://en.wikipedia.org/wiki/Intermediate_representation[↩︎](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md#fnref:1)
+- 应用程序二进制接口，Application Binary Interface（ABI） https://en.wikipedia.org/wiki/Application_binary_interface[↩︎](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md#fnref:2)
+
+
+
+## 2.5 机器码生成
+
+Go 语言编译的最后一个阶段就是根据 SSA 中间代码生成机器码了，这里谈的**机器码就是在目标 CPU 架构上能够运行的二进制代码**，[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)一节简单介绍的从抽象语法树到 SSA 中间代码的生成过程，将近 50 个生成中间代码的步骤中有一些过程严格上说是属于机器码生成阶段的。
+
+机器码的生成过程其实就是对 SSA 中间代码的降级（lower）过程，在 SSA 中间代码降级的过程中，编译器将一些值重写成了目标 CPU 架构的特定值，降级的过程处理了所有机器特定的重写规则并对代码进行了一定程度的优化；在 SSA 中间代码生成阶段的最后，Go 函数体的代码会被转换成一系列的 `obj.Prog` 结构体。
+
+### 2.5.1 指令集架构
+
+首先需要介绍的就是指令集架构了，虽然我们在第一节[编译过程概述](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)中曾经讲解过指令集架构的相关知识，但是在这里还是需要引入更多的指令集构知识。
+
+![instruction-set-architecture](go语言设计与实现.assets/e4197e719afa965f29928ba920b83742.png)
+
+**图 2-16 计算机软硬件之间的桥梁**
+
+[指令集架构](https://en.wikipedia.org/wiki/Instruction_set_architecture)是计算机的抽象模型，在很多时候也被称作架构或者计算机架构，它是**计算机软件和硬件之间的接口和桥梁**[1](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fn:1)；
+
+一个为特定指令集架构编写的应用程序能够运行在所有支持这种指令集架构的机器上，也就说如果当前应用程序支持 x86 的指令集，那么就可以运行在所有使用 x86 指令集的机器上，这其实就是抽象层的作用，每一个指令集架构都定义了支持的数据结构、寄存器、管理主内存的硬件支持（例如内存一致、地址模型和虚拟内存）、支持的指令集和 IO 模型，它的引入其实就在软件和硬件之间引入了一个抽象层，让同一个二进制文件能够在不同版本的硬件上运行。
+
+如果一个编程语言想要在所有的机器上运行，它就可以将中间代码转换成使用不同指令集架构的机器码，这可比为不同硬件单独移植要简单的太多了。
+
+
+
+![cisc-and-ris](go语言设计与实现.assets/284e890a46f7d7c5005feaa125d14fd4.png)
+
+**图 2-17 复杂指令集（CISC）和精简指令集（RISC）**
+
+最常见的指令集架构分类方法就是根据指令的复杂度将其分为复杂指令集（CISC）和精简指令集（RISC），复杂指令集架构包含了很多特定的指令，但是其中的一些指令很少会被程序使用，而精简指令集只实现了经常被使用的指令，不常用的操作都会通过组合简单指令来实现。
+
+
+
+[复杂指令集](https://en.wikipedia.org/wiki/Complex_instruction_set_computer)的特点就是指令数目多并且复杂，每条指令的字节长度并不相等，**x86 就是常见的复杂指令集处理器**，它的指令长度大小范围非常广，从 1 到 15 字节不等，对于长度不固定的指令，计算机必须额外对指令进行判断，这需要付出额外的性能损失[2](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fn:2)。
+
+
+
+而[精简指令集](https://en.wikipedia.org/wiki/Reduced_instruction_set_computer)对指令的数目和寻址方式做了精简，大大减少指令数量的同时更容易实现，指令集中的每一个指令都使用标准的字节长度、执行时间相比复杂指令集会少很多，处理器在处理指令时也可以流水执行，提高了对并行的支持，**作为一种常见的精简指令集处理器，amd 使用 4 个字节作为指令的固定长度**，省略了判断指令的性能损失[3](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fn:3)，精简指令集其实就是利用了我们耳熟能详的 20/80 原则，用 20% 的基础指令和它们的组合来解决问题。
+
+
+
+最开始的计算机使用复杂指令集是因为当时计算机的性能和内存比较有限，业界需要尽可能地减少机器需要执行的指令，所以更倾向于高度编码、长度不等以及多操作数的指令，但是随着性能的飞速提升，就出现了精简指令集这种牺牲代码密度换取简单实现的设计，不仅如此，硬件的飞速提升还带来了更多的寄存器和更高的时钟频率，软件开发人员也不再直接接触汇编代码，而是通过编译器和汇编器生成指令，复杂的机器指定对于编译器来说很难利用，所以精简的指令在这种场景下更适合。
+
+复杂指令集和精简指令集的使用其实是一种权衡，经过这么多年的发展，两种指令集也相互借鉴和学习，与最开始刚被设计出来时已经有了较大的差别，对于软件工程师来讲，复杂的硬件设备对于我们来说已经是领域下两层的知识了，其实不太需要掌握太多，但是对指令集架构感兴趣的读者可以简单找一些资料开拓眼界。
+
+
+
+### 2.5.2 机器码生成
+
+机器码的生成在 Go 的编译器中主要由两部分协同工作，其中一部分是负责 SSA 中间代码降级和根据目标架构进行特定处理的 [`src/cmd/compile/internal/ssa`](https://github.com/golang/go/tree/master/src/cmd/compile/internal/ssa) 包，另一部分是负责生成机器码的 [`src/cmd/internal/obj`](https://github.com/golang/go/tree/master/src/cmd/internal/obj)[4](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fn:4)：
+
+- [`src/cmd/compile/internal/ssa`](https://github.com/golang/go/tree/master/src/cmd/compile/internal/ssa) 主要负责对 SSA 中间代码进行降级、执行架构特定的优化和重写并生成 `obj.Prog` 指令；
+- [`src/cmd/internal/obj`](https://github.com/golang/go/tree/master/src/cmd/internal/obj) 作为一个汇编器会将这些指令最终转换成机器码完成这次的编译；
+
+#### SSA 降级
+
+SSA 的降级是在中间代码生成的过程中完成的，其中将近 50 轮处理的过程中，`lower` 以及后面的阶段都属于 SSA 降级这一过程，这么多轮的处理会将 SSA 转换成机器特定的操作：
+
+```
+var passes = [...]pass{
+    ...
+    {name: "lower", fn: lower, required: true},
+    {name: "lowered deadcode for cse", fn: deadcode}, // deadcode immediately before CSE avoids CSE making dead values live again
+    {name: "lowered cse", fn: cse},
+    ...
+    {name: "trim", fn: trim}, // remove empty blocks
+}
+```
+
+SSA 降级执行的第一个阶段就是 `lower`，该阶段的入口方法就是 [`src/cmd/compile/internal/ssa/lower.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/ssa/lower.go) 文件中的 [`lower`](https://github.com/golang/go/blob/c170b14c2c1cfb2fd853a37add92a82fd6eb4318/src/cmd/compile/internal/ssa/lower.go#L8-L11) 函数，它会将 SSA 的中间代码转换成机器特定的指令：
+
+```
+func lower(f *Func) {
+    applyRewrite(f, f.Config.lowerBlock, f.Config.lowerValue)
+}
+```
+
+向 `applyRewrite` 传入的两个函数 `lowerBlock` 和 `lowerValue` 是在[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)阶段初始化 SSA 配置时确定的，这两个函数会分别转换一个函数中的代码块和代码块中的值。
+
+假设目标机器使用 x86 的架构，最终会调用 [`rewriteBlock386`](https://github.com/golang/go/blob/c170b14c2c1cfb2fd853a37add92a82fd6eb4318/src/cmd/compile/internal/ssa/rewrite386.go#L21977-L23093) 和 [`rewriteValue386`](https://github.com/golang/go/blob/c170b14c2c1cfb2fd853a37add92a82fd6eb4318/src/cmd/compile/internal/ssa/rewrite386.go#L9-L709) 两个函数，这两个函数是两个巨大的 switch/case，前者总共有 2000 多行，后者将近 700 行，用于处理 x86 架构重写的函数总共有将近 30000 行代码，你能在 [`src/cmd/compile/internal/ssa/rewrite386.go`](https://github.com/golang/go/blob/master/src/cmd/compile/internal/ssa/rewrite386.go) 这里找到文件的全部内容，我们只节选其中的一段简单展示一下：
+
+```
+func rewriteValue386(v *Value) bool {
+    switch v.Op {
+    case Op386ADCL:
+        return rewriteValue386_Op386ADCL_0(v)
+    case Op386ADDL:
+        return rewriteValue386_Op386ADDL_0(v) || rewriteValue386_Op386ADDL_10(v) || rewriteValue386_Op386ADDL_20(v)
+    ...
+    }
+}
+func rewriteValue386_Op386ADCL_0(v *Value) bool {
+    // match: (ADCL x (MOVLconst [c]) f)
+    // cond:
+    // result: (ADCLconst [c] x f)
+    for {
+        _ = v.Args[2]
+        x := v.Args[0]
+        v_1 := v.Args[1]
+        if v_1.Op != Op386MOVLconst {
+            break
+        }
+        c := v_1.AuxInt
+        f := v.Args[2]
+        v.reset(Op386ADCLconst)
+        v.AuxInt = c
+        v.AddArg(x)
+        v.AddArg(f)
+        return true
+    }
+    ...
+}
+```
+
+重写的过程会将通用的 SSA 中间代码转换成目标架构特定的指令，上述的 `rewriteValue386_Op386ADCL_0` 函数就会使用 `ADCLconst` 替换 `ADCL` 和 `MOVLconst` 两条指令，它能通过对指令的压缩和优化减少在目标硬件上执行所需要的时间和资源。
+
+我们在上一节中间代码生成中已经介绍过 `compileSSA` 中调用 `buildssa` 的执行过程，我们在这里继续介绍 `buildssa` 函数返回之后的逻辑：
+
+```
+func compileSSA(fn *Node, worker int) {
+    f := buildssa(fn, worker)
+    pp := newProgs(fn, worker)
+    defer pp.Free()
+    genssa(f, pp)
+    pp.Flush()
+}
+```
+
+[`genssa`](https://github.com/golang/go/blob/075c20cea8a1efda0e8d5d33a1995a220ad27b8c/src/cmd/compile/internal/gc/ssa.go#L5899-L6226) 函数会创建一个新的 `obj.Progs` 结构并将生成的 SSA 中间代码都存入新建的结构体中，我们在 2.4.4 SSA 生成中得到的 `ssa.html` 文件中就包含最后生成的中间代码：
+
+![genssa](go语言设计与实现.assets/0410439fc43e096347f920952dca9575.png)
+
+**图 2-18 genssa 的执行结果**
+
+上述输出结果跟最后生成的汇编代码其实已经非常相似了，随后调用的 [`Flush`](https://github.com/golang/go/blob/075c20cea8a1efda0e8d5d33a1995a220ad27b8c/src/cmd/compile/internal/gc/gsubr.go#L92-L95) 函数就会使用 [`src/cmd/internal/obj`](https://github.com/golang/go/tree/master/src/cmd/internal/obj) 包中的汇编器将 SSA 转换成汇编代码：
+
+```
+func (pp *Progs) Flush() {
+    plist := &obj.Plist{Firstpc: pp.Text, Curfn: pp.curfn}
+    obj.Flushplist(Ctxt, plist, pp.NewProg, myimportpath)
+}
+```
+
+`buildssa` 中的 `lower` 和随后的多个阶段会对 SSA 进行转换、检查和优化，生成机器特定的中间代码，接下来通过 `genssa` 将代码输出到 `Progs` 对象中，这也是代码进入汇编器前的最后一个步骤。
+
+
+
+#### 汇编器
+
+汇编器是将汇编语言翻译为机器语言的程序，Go 语言的汇编器是基于 Plan 9 汇编器的输入类型设计的，Go 语言对于汇编语言 Plan 9 和汇编器的资料十分缺乏，网上能够找到的资料也大多都含糊不清，官方对汇编器在不同处理器架构上的实现细节也没有明确定义：
+
+> The details vary with architecture, and we apologize for the imprecision; the situation is **not well-defined**.[5](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fn:5)
+
+我们在研究汇编器和汇编语言时不应该陷入细节，只需要理解汇编语言的执行逻辑就能够帮助我们快速读懂汇编代码。当我们将如下的代码编译成汇编指令时，会得到如下的内容：
+
+```
+$ cat hello.go
+package hello
+func hello(a int) int {
+    c := a + 2
+    return c
+}
+$ GOOS=linux GOARCH=amd64 go tool compile -S main.go
+"".hello STEXT nosplit size=15 args=0x10 locals=0x0
+    0x0000 00000 (main.go:3)    TEXT    "".hello(SB), NOSPLIT, $0-16
+    0x0000 00000 (main.go:3)    FUNCDATA    $0, gclocals·33cdeccccebe80329f1fdbee7f5874cb(SB)
+    0x0000 00000 (main.go:3)    FUNCDATA    $1, gclocals·33cdeccccebe80329f1fdbee7f5874cb(SB)
+    0x0000 00000 (main.go:3)    FUNCDATA    $3, gclocals·33cdeccccebe80329f1fdbee7f5874cb(SB)
+    0x0000 00000 (main.go:4)    PCDATA    $2, $0
+    0x0000 00000 (main.go:4)    PCDATA    $0, $0
+    0x0000 00000 (main.go:4)    MOVQ    "".a+8(SP), AX
+    0x0005 00005 (main.go:4)    ADDQ    $2, AX
+    0x0009 00009 (main.go:5)    MOVQ    AX, "".~r1+16(SP)
+    0x000e 00014 (main.go:5)    RET
+    0x0000 48 8b 44 24 08 48 83 c0 02 48 89 44 24 10 c3     H.D$.H...H.D$..
+...
+```
+
+上述汇编代码都是由 [`Flushplist`](https://github.com/golang/go/blob/b2482e481722357c6daa98ef074d8eaf8ac4baf3/src/cmd/internal/obj/plist.go#L22-L114) 这个函数生成的，该函数会调用架构特定的 `Preprocess` 和 `Assemble` 方法：
+
+```
+func Flushplist(ctxt *Link, plist *Plist, newprog ProgAlloc, myimportpath string) {
+    ...
+    for _, s := range text {
+        mkfwd(s)
+        linkpatch(ctxt, s, newprog)
+        ctxt.Arch.Preprocess(ctxt, s, newprog)
+        ctxt.Arch.Assemble(ctxt, s, newprog)
+        linkpcln(ctxt, s)
+        ctxt.populateDWARF(plist.Curfn, s, myimportpath)
+    }
+}
+```
+
+`Preprocess` 和 `Assemble` 这两个方法其实是在 Go 编译器最外层的主函数就确定了，我们在 2.1.4 中提到过的 `archInits` 函数会根据目标硬件对当前架构使用的配置进行初始化。
+
+如果目标机器的架构是 x86，那么这两个函数最终会使用 [`preprocess`](https://github.com/golang/go/blob/b2482e481722357c6daa98ef074d8eaf8ac4baf3/src/cmd/internal/obj/x86/obj6.go#L565-L916) 和 [`span6`](https://github.com/golang/go/blob/498eaee461adefd5e578e62c134382ece94198da/src/cmd/internal/obj/x86/asm6.go#L1848-L2003)，作者在这里就不展开介绍这两个特别复杂的底层函数了，有兴趣的读者可以通过上述链接找到目标函数的位置了解预处理和汇编的处理过程，机器码的生成也都是由这两个函数组合完成的。
+
+### 2.5.3 小结
+
+机器码生成作为 Go 语言编译的最后一步，其实已经到了硬件和机器指令这一层，其中对于内存、寄存器的处理非常复杂并且难以阅读，想要真正掌握这里的处理的步骤和原理还是需要非常多的精力，但是作为软件工程师来说，如果不是 Go 语言编译器的开发者或者需要经常处理汇编语言和机器指令，掌握这些知识的投资回报率实在太低，没有太多的必要，我们在这里只需要对这个过程有所了解，补全知识上的盲点，这样在遇到问题时能够快速定位。
+
+- Instruction set architecture https://en.wikipedia.org/wiki/Instruction_set_architecture[↩︎](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fnref:1)
+- 复杂指令集 Complex instruction set computer https://en.wikipedia.org/wiki/Complex_instruction_set_computer[↩︎](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fnref:2)
+- 精简指令集 Reduced instruction set computer https://en.wikipedia.org/wiki/Reduced_instruction_set_computer[↩︎](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fnref:3)
+- Introduction to the Go compiler https://github.com/golang/go/blob/master/src/cmd/compile/README.md[↩︎](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fnref:4)
+- A Quick Guide to Go's Assembler https://golang.org/doc/asm[↩︎](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md#fnref:5)
+
+## 2.6 推荐阅读
+
+- [Introduction to the Go compiler](https://github.com/golang/go/tree/master/src/cmd/compile)
+- [Go 1.5 Bootstrap Plan](https://docs.google.com/document/d/1OaatvGhEAq7VseQ9kkavxKNAfepWy2yhPUBs96FGV28/edit)
+- [A Manual for the Plan 9 assembler](https://9p.io/sys/doc/asm.html)
+- [Lexical Scanning in Go - Rob Pike](https://www.youtube.com/watch?v=HxaD_trXwRE)
+
+## 2.7 总结
+
+到这里，整个 Go 语言编译的过程也都介绍完了，从[词法与语法分析](https://www.bookstack.cn/read/draveness-golang/a81e1b5a6b7b28bc.md)、[类型检查](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md)、[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)到最后的[机器码生成](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md)，包含的内容非常复杂，不过经过分析我们已经能够对 Go 语言编译器的原理有足够的了解，也对相关特性的实现更加清楚，后面的章节会介绍一些具体特性的原理，这些原理会依赖于编译期间的一些步骤，所以我们在深入理解 Go 语言的特性之前还是需要先了解一些编译期间完成的工作。
+
+
+
+
+
