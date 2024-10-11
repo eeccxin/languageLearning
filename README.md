@@ -4,5 +4,5 @@
 
 :pencil2: golang
 
-- [Go语言设计与实现](golang/Go语言设计与实现/Go语言设计与实现.md)
+- [go语言设计与实现](golang/go语言设计与实现/go语言设计与实现.md)
 
