@@ -1901,5 +1901,1190 @@ func Flushplist(ctxt *Link, plist *Plist, newprog ProgAlloc, myimportpath string
 
 
 
+# 第三章 数据结构
+
+- [3.1 数组](https://www.bookstack.cn/read/draveness-golang/79255565262cc9f6.md)
+- [3.2 切片](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md)
+- [3.3 哈希表](https://www.bookstack.cn/read/draveness-golang/8a6fa5746b8fbe7e.md)
+- [3.4 字符串](https://www.bookstack.cn/read/draveness-golang/0bc3143426c7b7ea.md)
+- [3.5 推荐阅读](https://www.bookstack.cn/read/draveness-golang/4f0f4af7cd96ea0e.md)
+
+
+
+## 3.1 数组
+
+数组和切片是 Go 语言中常见的数据结构，很多刚刚使用 Go 的开发者往往会混淆这两个概念，数组作为最常见的集合在编程语言中是非常重要的，除了数组之外，Go 语言引入了另一个概念 — 切片，切片与数组有一些类似，但是它们的不同之处导致使用上会产生巨大的差别。我们在这一节中会从 Go 语言的[编译期间](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)运行时来介绍数组的底层实现原理，其中会包括数组的初始化、访问和赋值几种常见操作。
+
+
+
+### 3.1.1 概述
+
+数组是由相**同类型元素**的集合组成的数据结构，计算机会为数组分配一块**连续的内存**来保存其中的元素，我们可以利用数组中元素的索引快速访问元素对应的存储地址，常见的数组大多都是一维的线性数组，而多维数组在数值和图形计算领域却有比较常见的应用[1](https://www.bookstack.cn/read/draveness-golang/79255565262cc9f6.md#fn:1)。
+
+![3D-array](go语言设计与实现.assets/7a95ec5e69ae3530797f91d20e4e05a8.jpeg)
+
+**图 3-1 多维数组**
+
+数组作为一种基本的数据类型，我们通常都会从两个维度描述数组，我们首先需要描述数组中存储的元素类型，还需要描述数组最大能够存储的元素个数，在 Go 语言中我们往往会使用如下所示的方式来表示数组类型：
+
+```
+[10]int
+[200]interface{}
+```
+
+与很多语言不同，**Go 语言中数组在初始化之后大小就无法改变，存储元素类型相同、但是大小不同的数组类型在 Go 语言看来也是完全不同的，只有两个条件都相同才是同一个类型**。
+
+```
+func NewArray(elem *Type, bound int64) *Type {
+    if bound < 0 {
+        Fatalf("NewArray: invalid bound %v", bound)
+    }
+    t := New(TARRAY)
+    t.Extra = &Array{Elem: elem, Bound: bound}
+    t.SetNotInHeap(elem.NotInHeap())
+    return t
+}
+```
+
+编译期间的数组类型是由上述的 [`cmd/compile/internal/types.NewArray`](https://github.com/golang/go/blob/616c39f6a636166447bdaac4f0871a5ca52bae8c/src/cmd/compile/internal/types/type.go#L473-L481) 函数生成的，类型 `Array` 包含两个字段，一个是元素类型 `Elem`，另一个是数组的大小 `Bound（范围、界）`，这两个字段共同构成了数组类型，而当前数组是否应该在堆栈中初始化也在编译期就确定了。
+
+
+
+### 3.1.2 初始化
+
+Go 语言中的数组有两种不同的创建方式，一种是显式的指定数组的大小，另一种是使用 `[…]T` 声明数组，Go 语言会在编译期间通过源代码对数组的大小进行**推断**：
+
+```
+arr1 := [3]int{1, 2, 3}
+arr2 := [...]int{1, 2, 3}
+```
+
+上述两种声明方式在运行期间得到的结果是完全相同的，**后一种声明方式在编译期间就会被『转换』成为前一种**，这也就是编译器对数组大小的推导，下面我们来介绍编译器的推导过程。
+
+#### 上限推导
+
+两种不同的声明方式会导致编译器做出完全不同的处理，如果我们使用第一种方式 `[10]T`，那么变量的类型在编译进行到[类型检查](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md)阶段就会被提取出来，随后会使用 [`cmd/compile/internal/types.NewArray`](https://github.com/golang/go/blob/616c39f6a636166447bdaac4f0871a5ca52bae8c/src/cmd/compile/internal/types/type.go#L473-L481) 函数创建包含数组大小的 `Array` 类型。
+
+当我们使用 `[…]T` 的方式声明数组时，虽然在这一步也会创建一个 `Array` 类型 `Array{Elem: elem, Bound: -1}`，但是其中的数组大小上限会是 `-1`，这里的 `-1` 只是一个占位符，编译器会在后面的 [`cmd/compile/internal/gc.typecheckcomplit`](https://github.com/golang/go/blob/b7d097a4cf6b8a9125e4770b54d33826fa803023/src/cmd/compile/internal/gc/typecheck.go#L2755-L2961) 函数中对该数组的大小进行推导：
+
+```golang
+func typecheckcomplit(n *Node) (res *Node) {
+    ...
+    switch t.Etype {
+    case TARRAY, TSLICE:
+        var length, i int64
+        nl := n.List.Slice()
+        for i2, l := range nl {
+            i++
+            if i > length {
+                length = i
+            }
+        }
+        if t.IsDDDArray() {
+            t.SetNumElem(length)
+        }
+    }
+}
+```
+
+这个删减后的 [`cmd/compile/internal/gc.typecheckcomplit`](https://github.com/golang/go/blob/b7d097a4cf6b8a9125e4770b54d33826fa803023/src/cmd/compile/internal/gc/typecheck.go#L2755-L2961) 函数通过**遍历元素的方式**来计算数组中元素的数量。上述代码中的 `DDDArray` 指的就是使用 `[…]T` 声明的数组，因为声明这种数组时需要使用三个点（**Dot**），所以在编译器中就被称作 `DDDArray`。
+
+所以我们可以看出 `[…]T{1, 2, 3}` 和 `[3]T{1, 2, 3}` 在运行时是完全等价的，`[…]T` 这种初始化方式也只是 Go 语言为我们提供的一种**语法糖**，当我们不想计算数组中的元素个数时就可以通过这种方法较少一些工作。
+
+
+
+#### 语句转换
+
+对于一个由字面量组成的数组，根据数组元素数量的不同，编译器会在负责初始化字面量的 [`cmd/compile/internal/gc.anylit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L875-L967) 函数中做两种不同的优化：
+
+- 当元素数量小于或者等于 4 个时，会直接将数组中的元素放置在**栈**上；
+- 当元素数量大于 4 个时，会将数组中的元素放置到**静态区**并在运行时取出；
+
+```
+func anylit(n *Node, var_ *Node, init *Nodes) {
+    t := n.Type
+    switch n.Op {
+    case OSTRUCTLIT, OARRAYLIT:
+        if n.List.Len() > 4 {
+            ...
+        }
+        fixedlit(inInitFunction, initKindLocalCode, n, var_, init)
+    ...
+    }
+}
+```
+
+当数组的元素**小于或者等于四个**时，[`cmd/compile/internal/gc.fixedlit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L515-L583) 会负责在函数编译之前将 `[3]{1, 2, 3}` 转换成更加原始的语句：
+
+```
+func fixedlit(ctxt initContext, kind initKind, n *Node, var_ *Node, init *Nodes) {
+    var splitnode func(*Node) (a *Node, value *Node)
+    ...
+    for _, r := range n.List.Slice() {
+        a, value := splitnode(r)
+        a = nod(OAS, a, value)
+        a = typecheck(a, ctxStmt)
+        switch kind {
+        case initKindStatic:
+            genAsStatic(a)
+        case initKindLocalCode:
+            a = orderStmtInPlace(a, map[string][]*Node{})
+            a = walkstmt(a)
+            init.Append(a)
+        }
+    }
+}
+```
+
+当数组中元素的个数小于四个时，[`cmd/compile/internal/gc.fixedlit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L515-L583) 函数接受的 `kind` 是 `initKindLocalCode`，上述代码会将原有的初始化语句 `[3]int{1, 2, 3}` 拆分成一个声明变量的表达式和几个赋值表达式，这些表达式会完成对数组的初始化：
+
+```
+var arr [3]int
+arr[0] = 1
+arr[1] = 2
+arr[2] = 3
+```
+
+但是如果当前数组的元素大于 4 个，`anylit` 方法会先获取一个唯一的 `staticname`，然后调用 [`cmd/compile/internal/gc.fixedlit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L515-L583) 函数在静态存储区初始化数组中的元素并将临时变量赋值给当前的数组：
+
+```
+func anylit(n *Node, var_ *Node, init *Nodes) {
+    t := n.Type
+    switch n.Op {
+    case OSTRUCTLIT, OARRAYLIT:
+        if n.List.Len() > 4 {
+            vstat := staticname(t)
+            vstat.Name.SetReadonly(true)
+            fixedlit(inNonInitFunction, initKindStatic, n, vstat, init)
+            a := nod(OAS, var_, vstat)
+            a = typecheck(a, ctxStmt)
+            a = walkexpr(a, init)
+            init.Append(a)
+            break
+        }
+        ...
+    }
+}
+```
+
+假设我们在代码中初始化 `[]int{1, 2, 3, 4, 5}` 数组，那么我们可以将上述过程理解成以下的伪代码：
+
+```
+var arr [5]int
+statictmp_0[0] = 1
+statictmp_0[1] = 2
+statictmp_0[2] = 3
+statictmp_0[3] = 4
+statictmp_0[4] = 5
+arr = statictmp_0
+```
+
+总结起来，如果数组中元素的个数小于或者等于 4 个，那么所有的变量会直接在栈上初始化，如果数组元素大于 4 个，变量就会在静态存储区初始化然后拷贝到栈上，这些转换后的代码才会继续进入[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)和[机器码生成](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md)两个阶段，最后生成可以执行的二进制文件。
+
+
+
+### 3.1.3 访问和赋值
+
+无论是在栈上还是静态存储区，**数组在内存中其实就是一连串的内存空间**，表示数组的方法就是**一个指向数组开头的指针、数组中元素的数量以及数组中元素类型占的空间大小**，如果我们不知道数组中元素的数量，访问时就可能发生越界，而如果不知道数组中元素类型的大小，就没有办法知道应该一次取出多少字节的数据，如果没有这些信息，我们就无法知道这片连续的内存空间到底存储了什么数据：
+
+![golang-array-memory](go语言设计与实现.assets/f198479bc3f617455d5e24fcb41363d4.png)
+
+**图 3-2 数组的内存空间**
+
+**数组访问越界是非常严重的错误**，Go 语言中对越界的判断是可以在编译期间由静态类型检查完成的，
+
+[`cmd/compile/internal/gc.typecheck1`](https://github.com/golang/go/blob/b7d097a4cf6b8a9125e4770b54d33826fa803023/src/cmd/compile/internal/gc/typecheck.go#L327-L2081) 函数会对访问数组的索引进行验证：
+
+```
+func typecheck1(n *Node, top int) (res *Node) {
+    switch n.Op {
+    case OINDEX:
+        ok |= ctxExpr
+        l := n.Left  // array
+        r := n.Right // index
+        switch n.Left.Type.Etype {
+        case TSTRING, TARRAY, TSLICE:
+            ...
+            if n.Right.Type != nil && !n.Right.Type.IsInteger() {
+                yyerror("non-integer array index %v", n.Right)
+                break
+            }
+            if !n.Bounded() && Isconst(n.Right, CTINT) {
+                x := n.Right.Int64()
+                if x < 0 {
+                    yyerror("invalid array index %v (index must be non-negative)", n.Right)
+                } else if n.Left.Type.IsArray() && x >= n.Left.Type.NumElem() {
+                    yyerror("invalid array index %v (out of bounds for %d-element array)", n.Right, n.Left.Type.NumElem())
+                }
+            }
+        }
+    ...
+    }
+}
+```
+
+- 访问数组的索引是非整数时会直接报错 —— `non-integer array index %v`；
+
+- 访问数组的索引是负数时会直接报错 —— `"invalid array index %v (index must be non-negative)"`；
+
+- 访问数组的索引越界时会直接报错 —— `"invalid array index %v (out of bounds for %d-element array)"`；
+
+  
+
+数组和字符串的一些简单越界错误都会在编译期间发现，比如我们直接使用整数或者常量访问数组，但是如果使用变量index去访问数组或者字符串时，编译器就无法发现对应的错误了，这时就需要 Go 语言运行时发挥作用了(panic: runtime error)：
+
+```
+arr[4]: invalid array index 4 (out of bounds for 3-element array)
+arr[i]: panic: runtime error: index out of range [4] with length 3
+```
+
+Go 语言运行时在发现数组、切片和字符串的越界操作会由运行时的 `panicIndex` 和 [`runtime.goPanicIndex`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L86-L89) 函数触发程序的运行时错误并导致崩溃退出：
+
+```
+TEXT runtime·panicIndex(SB),NOSPLIT,$0-8
+    MOVL    AX, x+0(FP)
+    MOVL    CX, y+4(FP)
+    JMP    runtime·goPanicIndex(SB)
+func goPanicIndex(x int, y int) {
+    panicCheck1(getcallerpc(), "index out of range")
+    panic(boundsError{x: int64(x), signed: true, y: y, code: boundsIndex})
+}
+```
+
+当数组的访问操作 `OINDEX` 成功通过编译器的检查之后，会被转换成几个 SSA 指令，假设我们有如下所示的 Go 语言代码，通过如下的方式进行编译会得到 `ssa.html` 文件：
+
+```
+package check
+func outOfRange() int {
+    arr := [3]int{1, 2, 3}
+    i := 4
+    elem := arr[i]
+    return elem
+}
+$ GOSSAFUNC=outOfRange go build array.go
+dumped SSA to ./ssa.html
+```
+
+
+
+`start` 阶段生成的 SSA 代码就是优化之前的第一版中间代码，下面展示的部分就是 `elem := arr[i]` 对应的中间代码，在这段中间代码中我们发现 Go 语言为数组的访问操作生成了判断数组上限的指令 `IsInBounds` 以及当条件不满足时触发程序崩溃的 `PanicBounds` 指令：
+
+```
+b1:
+    ...
+    v22 (6) = LocalAddr <*[3]int> {arr} v2 v20
+    v23 (6) = IsInBounds <bool> v21 v11
+If v23 → b2 b3 (likely) (6)
+b2: ← b1-
+    v26 (6) = PtrIndex <*int> v22 v21
+    v27 (6) = Copy <mem> v20
+    v28 (6) = Load <int> v26 v27 (elem[int])
+    ...
+Ret v30 (+7)
+b3: ← b1-
+    v24 (6) = Copy <mem> v20
+    v25 (6) = PanicBounds <mem> [0] v21 v11 v24
+Exit v25 (6)
+```
+
+`PanicBounds` 指令最终会被转换成上面提到的 `panicIndex` 函数，当数组下标没有越界时，编译器会先获取数组的内存地址和访问的下标，然后利用 `PtrIndex` 计算出目标元素的地址，再使用 `Load` 操作将指针中的元素加载到内存中。
+
+当然只有当编译器无法对数组下标是否越界无法做出判断时才会加入 `PanicBounds` 指令交给运行时进行判断，在使用字面量整数访问数组下标时就会生成非常简单的中间代码，当我们将上述代码中的 `arr[i]` 改成 `arr[2]` 时，就会得到如下所示的代码：
+
+```
+b1:
+    ...
+    v21 (5) = LocalAddr <*[3]int> {arr} v2 v20
+    v22 (5) = PtrIndex <*int> v21 v14
+    v23 (5) = Load <int> v22 v20 (elem[int])
+    ...
+```
+
+Go 语言对于数组的访问还是有着比较多的检查的，它不仅会在编译期间提前发现一些简单的越界错误并插入用于检测数组上限的函数调用，而在运行期间这些插入的函数会负责保证不会发生越界错误。
+
+数组的赋值和更新操作 `a[i] = 2` 也会生成 SSA 生成期间计算出数组当前元素的内存地址，然后修改当前内存地址的内容，这些赋值语句会被转换成如下所示的 SSA 操作：
+
+```
+b1:
+    ...
+    v21 (5) = LocalAddr <*[3]int> {arr} v2 v19
+    v22 (5) = PtrIndex <*int> v21 v13
+    v23 (5) = Store <mem> {int} v22 v20 v19
+    ...
+```
+
+赋值的过程中会先确定目标数组的地址，再通过 `PtrIndex` 获取目标元素的地址，最后使用 `Store` 指令将数据存入地址中，从上面的这些 SSA 代码中我们可以看出无论是数组的寻址还是赋值都是在编译阶段完成的，没有运行时的参与。
+
+### 3.1.4 小结
+
+数组是 Go 语言中重要的数据结构，了解它的实现能够帮助我们更好地理解这门语言，通过对其实现的分析，我们知道了对数组的访问和赋值需要同时依赖编译器和运行时，它的大多数操作在[编译期间](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)都会转换成对内存的直接读写，在中间代码生成期间，编译器还会插入运行时方法 `panicIndex` 调用防止发生越界错误。
+
+- Array data structure, https://en.wikipedia.org/wiki/Array_data_structure[↩︎](https://www.bookstack.cn/read/draveness-golang/79255565262cc9f6.md#fnref:1)
+
+
+
+## 3.2 切片
+
+我们在上一节介绍的数组在 Go 语言中没那么常用，更常用的数据结构其实是切片，**切片就是动态数组**，它的长度并不固定，我们可以随意向切片中追加元素，而切片会在容量不足时自动扩容。
+
+在 Go 语言中，切片类型的声明方式与数组有一些相似，由于切片的长度是动态的，所以声明时只需要指定切片中的元素类型：
+
+```
+[]int
+[]interface{}
+```
+
+从切片的定义我们能推测出，切片在编译期间的生成的类型只会包含切片中的元素类型，即 `int` 或者 `interface{}` 等。[`cmd/compile/internal/types.NewSlice`](https://github.com/golang/go/blob/616c39f6a636166447bdaac4f0871a5ca52bae8c/src/cmd/compile/internal/types/type.go#L484-L496) 就是编译期间用于创建 `Slice` 类型的函数：
+
+```
+func NewSlice(elem *Type) *Type {
+    if t := elem.Cache.slice; t != nil {
+        if t.Elem() != elem {
+            Fatalf("elem mismatch")
+        }
+        return t
+    }
+    t := New(TSLICE)
+    t.Extra = Slice{Elem: elem}
+    elem.Cache.slice = t
+    return t
+}
+```
+
+上述方法返回的结构体 `TSLICE` 中的 `Extra` 字段是一个只包含切片内元素类型的 `Slice{Elem: elem}` 结构，也就是说**切片内元素的类型是在编译期间确定的**，编译器确定了类型之后，会将类型存储在 `Extra` 字段中帮助程序在运行时动态获取。
+
+
+
+### 3.2.1 数据结构
+
+编译期间的切片是 `Slice` 类型的，但是在运行时切片由如下的 `SliceHeader` 结构体表示，其中 **`Data` 字段是指向数组的指针**，`Len` 表示当前切片的长度，而 `Cap` 表示当前切片的容量，也就是 `Data` 数组的大小：
+
+```
+type SliceHeader struct {
+    Data uintptr
+    Len  int
+    Cap  int
+}
+```
+
+`Data` 作为一个指针指向的数组是一片连续的内存空间，这片内存空间可以用于存储切片中保存的全部元素，数组中的元素只是逻辑上的概念，底层存储其实都是连续的，所以我们可以将切片理解成一片连续的内存空间加上长度与容量的标识。
+
+![golang-slice-struct](go语言设计与实现.assets/027b700b31af167d4f4f8c5ae7737941.png)
+
+**图 3-3 Go 语言切片结构体**
+
+从上图我们会发现切片与数组的关系非常密切，切片引入了一个抽象层，提供了对数组中部分片段的引用，作为数组的引用，我们可以在运行区间可以修改它的长度，如果底层的数组长度不足就会触发扩容机制，切片中的数组就会发生变化，不过在上层看来切片时没有变化的，上层只需要与切片打交道不需要关心底层的数组变化。
+
+我们在上一节介绍过，获取数组大小、对数组中的元素的读写在编译期间就已经进行了简化，由于数组的内存固定且连续，很多操作都会变成对内存的直接读写。但是切片是运行时才会确定内容的结构，所有的操作还需要依赖 Go 语言的运行时来完成，我们接下来就会介绍切片一些常见操作的实现原理。
+
+
+
+### 3.2.2 初始化
+
+Go 语言中的切片有三种初始化的方式：
+
+- 通过下标的方式获得数组或者切片的一部分；
+- 使用字面量初始化新的切片；
+- 使用关键字 `make` 创建切片：
+
+```
+arr[0:3] or slice[0:3]
+slice := []int{1, 2, 3}
+slice := make([]int, 10)
+```
+
+
+
+#### 使用下标
+
+使用下标创建切片是最原始也最接近汇编语言的方式，它是所有方法中最为底层的一种，`arr[0:3]` 或者 `slice[0:3]` 这些操作会由编译器转换成 `OpSliceMake` 操作，我们可以通过下面的代码来验证一下：
+
+```go
+// ch03/op_slice_make.go
+package opslicemake
+func newSlice() []int {
+    arr := [3]int{1, 2, 3}
+    slice := arr[0:1]
+    return slice
+}
+```
+
+通过 `GOSSAFUNC` 变量编译上述代码可以得到如下所示的 SSA 中间代码，在[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)的 `decompose builtin` 阶段，`slice := arr[0:1]` 对应的部分：
+
+```
+v27 (+5) = SliceMake <[]int> v11 v14 v17
+name &arr[*[3]int]: v11
+name slice.ptr[*int]: v11
+name slice.len[int]: v14
+name slice.cap[int]: v17
+```
+
+`SliceMake` 这个操作会接受三个参数创建新的切片，元素类型、数组指针、切片大小和容量，这也就是我们在数据结构一节中提到的切片的几个字段。
+
+
+
+#### 字面量
+
+当我们使用字面量 `[]int{1, 2, 3}` 创建新的切片时，[`cmd/compile/internal/gc.slicelit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L595-L766) 函数会在编译期间将它展开成如下所示的代码片段：
+
+```
+var vstat [3]int
+vstat[0] = 1
+vstat[1] = 2
+vstat[2] = 3
+var vauto *[3]int = new([3]int)
+*vauto = vstat
+slice := vauto[:]
+```
+
+- 根据切片中的元素数量对底层数组的大小进行推断并创建一个数组；
+- 将这些字面量元素存储到初始化的数组中；
+- 创建一个同样指向 `[3]int` 类型的数组指针；
+- 将静态存储区的数组 `vstat` 赋值给 `vauto` 指针所在的地址；
+- 通过 `[:]` 操作获取一个底层使用 `vauto` 的切片；第 5 步中的 `[:]` 就是使用下标创建切片的方法，从这一点我们也能看出 `[:]` 操作是创建切片最底层的一种方法。
+
+
+
+#### 关键字
+
+如果使用字面量的方式创建切片，大部分的工作就都会在编译期间完成，但是当我们使用 `make` 关键字创建切片时，很多工作都需要运行时的参与；调用方必须在 `make` 函数中传入一个切片的大小以及可选的容量，[`cmd/compile/internal/gc.typecheck1`](https://github.com/golang/go/blob/b7d097a4cf6b8a9125e4770b54d33826fa803023/src/cmd/compile/internal/gc/typecheck.go#L327-L2126) 会对参数进行校验：
+
+```
+func typecheck1(n *Node, top int) (res *Node) {
+    switch n.Op {
+    ...
+    case OMAKE:
+        args := n.List.Slice()
+        i := 1
+        switch t.Etype {
+        case TSLICE:
+            if i >= len(args) {
+                yyerror("missing len argument to make(%v)", t)
+                return n
+            }
+            l = args[i]
+            i++
+            var r *Node
+            if i < len(args) {
+                r = args[i]
+            }
+            ...
+            if Isconst(l, CTINT) && r != nil && Isconst(r, CTINT) && l.Val().U.(*Mpint).Cmp(r.Val().U.(*Mpint)) > 0 {
+                yyerror("len larger than cap in make(%v)", t)
+                return n
+            }
+            n.Left = l
+            n.Right = r
+            n.Op = OMAKESLICE
+        }
+    ...
+    }
+}
+```
+
+
+
+上述函数不仅会检查 `len` 是否传入，还会保证传入的容量 `cap` 一定大于或者等于 `len`，除了校验参数之外，当前函数会将 `OMAKE` 节点转换成 `OMAKESLICE`，随后的中间代码生成阶段在 [`cmd/compile/internal/gc.walkexpr`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/walk.go#L439-L1532) 函数中的 [`OMAKESLICE`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/walk.go#L1315) 分支依据两个重要条件对这里的 `OMAKESLICE` 进行转换：
+
+- 切片的大小和容量是否足够小；
+- 切片是否发生了逃逸，最终在堆上初始化当切片发生逃逸或者非常大时，我们需要 [`runtime.makeslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L34-L50) 函数在堆上初始化，如果当前的切片不会发生逃逸并且切片非常小的时候，`make([]int, 3, 4)` 会被直接转换成如下所示的代码：
+
+```
+var arr [4]int
+n := arr[:3]
+```
+
+上述代码会初始化数组并且直接通过下标 `[:3]` 来得到数组的切片，这两部分操作都会在编译阶段完成，编译器会在栈上或者静态存储区创建数组，`[:3]` 会被转换成上一节提到的 `OpSliceMake` 操作。
+
+分析了主要由编译器处理的分支之后，我们回到用于创建切片的运行时函数 [`runtime.makeslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L34-L50)，这个函数的实现非常简单：
+
+```
+func makeslice(et *_type, len, cap int) unsafe.Pointer {
+    mem, overflow := math.MulUintptr(et.size, uintptr(cap))
+    if overflow || mem > maxAlloc || len < 0 || len > cap {
+        mem, overflow := math.MulUintptr(et.size, uintptr(len))
+        if overflow || mem > maxAlloc || len < 0 {
+            panicmakeslicelen()
+        }
+        panicmakeslicecap()
+    }
+    return mallocgc(mem, et, true)
+}
+```
+
+它的主要工作就是计算当前切片占用的内存空间并在堆上申请一片连续的内存，它使用如下的方式计算占用的内存：
+
+```
+内存空间 = 切片中元素大小 x 切片容量
+```
+
+虽然大多的错误都可以在编译期间被检查出来，但是在创建切片的过程中如果发生了以下错误就会直接导致程序触发运行时错误并崩溃：
+
+- 内存空间的大小发生了溢出；
+- 申请的内存大于最大可分配的内存；
+- 传入的长度小于 0 或者长度大于容量；`mallocgc` 就是用于申请内存的函数，这个函数的实现还是比较复杂，如果遇到了比较小的对象会直接初始化在 Go 语言调度器里面的 P 结构中，而大于 32KB 的一些对象会在堆上初始化，我们会在后面的章节中详细介绍 Go 语言的内存分配器，在这里就不展开分析了。
+
+目前的 [`runtime.makeslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L34-L50) 会返回指向底层数组的指针，之前版本的 Go 语言中，数组指针、长度和容量会被合成一个 `slice` 结构并返回，但是从 [cmd/compile: move slice construction to callers of makeslice](https://github.com/golang/go/commit/020a18c545bf49ffc087ca93cd238195d8dcc411#diff-d9238ca551e72b3a80da9e0da10586a4) 这次提交[1](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md#fn:1)之后，构建结构体 `SliceHeader` 的工作就都交给 [`runtime.makeslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L34-L50) 的调用方处理了，这些调用方会在编译期间构建切片结构体：
+
+```
+func typecheck1(n *Node, top int) (res *Node) {
+    switch n.Op {
+    ...
+    case OSLICEHEADER:
+    switch 
+        t := n.Type
+        n.Left = typecheck(n.Left, ctxExpr)
+        l := typecheck(n.List.First(), ctxExpr)
+        c := typecheck(n.List.Second(), ctxExpr)
+        l = defaultlit(l, types.Types[TINT])
+        c = defaultlit(c, types.Types[TINT])
+        n.List.SetFirst(l)
+        n.List.SetSecond(c)
+    ...
+    }
+}
+```
+
+`OSLICEHEADER` 操作会创建我们在上面介绍过的结构体 `SliceHeader`，其中包含数组指针、切片长度和容量，它也是切片在运行时的表示：
+
+```
+type SliceHeader struct {
+    Data uintptr
+    Len  int
+    Cap  int
+}
+```
+
+正是因为大多数对切片类型的操作并不需要直接操作原 `slice` 结构体，所以 `SliceHeader` 的引入能够减少切片初始化时的少量开销，这个改动能够减少 ~0.2% 的 Go 语言包大小并且能够减少 92 个 `panicindex` 的调用，占整个 Go 语言二进制的 ~3.5%。
+
+
+
+### 3.2.3 访问元素
+
+对切片常见的操作就是获取它的长度或者容量，这两个不同的函数 `len` 和 `cap` 被 Go 语言的编译器看成是两种特殊的操作，即 `OLEN` 和 `OCAP`，它们会在 [SSA 生成阶段](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)被 [`cmd/compile/internal/gc.epxr`](https://github.com/golang/go/blob/a037582efff56082631508b15b287494df6e9b69/src/cmd/compile/internal/gc/ssa.go#L1975-L2724) 函数转换成 `OpSliceLen` 和 `OpSliceCap` 操作：
+
+```
+func (s *state) expr(n *Node) *ssa.Value {
+    switch n.Op {
+    case OLEN, OCAP:
+        switch {
+        case n.Left.Type.IsSlice():
+            op := ssa.OpSliceLen
+            if n.Op == OCAP {
+                op = ssa.OpSliceCap
+            }
+            return s.newValue1(op, types.Types[TINT], s.expr(n.Left))
+        ...
+        }
+    ...
+    }
+}
+```
+
+访问切片中的字段可能会触发 `decompose builtin` 阶段的优化，`len(slice)` 或者 `cap(slice)` 在一些情况下会被直接替换成切片的长度或者容量，不需要运行时从切片结构中获取：
+
+```
+(SlicePtr (SliceMake ptr _ _ )) -> ptr
+(SliceLen (SliceMake _ len _)) -> len
+(SliceCap (SliceMake _ _ cap)) -> cap
+```
+
+除了获取切片的长度和容量之外，访问切片中元素使用的 `OINDEX` 操作也会在中间代码生成期间转换成对地址的直接访问：
+
+```
+func (s *state) expr(n *Node) *ssa.Value {
+    switch n.Op {
+    case OINDEX:
+        switch {
+        case n.Left.Type.IsSlice():
+            p := s.addr(n, false)
+            return s.load(n.Left.Type.Elem(), p)
+        ...
+        }
+    ...
+    }
+}
+```
+
+切片的操作基本都是在编译期间完成的，除了访问切片的长度、容量或者其中的元素之外，使用 `range` 遍历切片时也会在编译期间转换成形式更简单的代码，我们会在后面的 `range` 关键字一节中介绍使用 `range` 遍历切片的过程。
+
+
+
+
+
+### 3.2.4 追加和扩容
+
+向切片中追加元素应该是最常见的切片操作，在 Go 语言中我们会使用 `append` 关键字向切片追加元素，中间代码生成阶段的 [`cmd/compile/internal/gc.state.append`](https://github.com/golang/go/blob/a037582efff56082631508b15b287494df6e9b69/src/cmd/compile/internal/gc/ssa.go#L2732-L2884) 方法会拆分 `append` 关键字，该方法追加元素会根据返回值是否会覆盖原变量，分别进入两种流程，如果 `append` 返回的『新切片』不需要赋值回原有的变量，就会进入如下的处理流程：
+
+```
+// append(slice, 1, 2, 3)
+ptr, len, cap := slice
+newlen := len + 3
+if newlen > cap {
+    ptr, len, cap = growslice(slice, newlen)
+    newlen = len + 3
+}
+*(ptr+len) = 1
+*(ptr+len+1) = 2
+*(ptr+len+2) = 3
+return makeslice(ptr, newlen, cap)
+```
+
+
+
+我们会先对切片结构体进行解构获取它的数组指针、大小和容量，如果在追加元素后切片的大小大于容量，那么就会调用 [`runtime.growslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L76-L191) 对切片进行扩容并将新的元素依次加入切片；如果 `append` 后的切片会覆盖原切片，即 `slice = append(slice, 1, 2, 3)`， [`cmd/compile/internal/gc.state.append`](https://github.com/golang/go/blob/a037582efff56082631508b15b287494df6e9b69/src/cmd/compile/internal/gc/ssa.go#L2732-L2884) 就会使用另一种方式改写关键字：
+
+```
+// slice = append(slice, 1, 2, 3)
+a := &slice
+ptr, len, cap := slice
+newlen := len + 3
+if uint(newlen) > uint(cap) {
+   newptr, len, newcap = growslice(slice, newlen)
+   vardef(a)
+   *a.cap = newcap
+   *a.ptr = newptr
+}
+newlen = len + 3
+*a.len = newlen
+*(ptr+len) = 1
+*(ptr+len+1) = 2
+*(ptr+len+2) = 3
+```
+
+是否覆盖原变量的逻辑其实差不多，最大的区别在于最后的结果是不是赋值回原有的变量，如果我们选择覆盖原有的变量，也不需要担心切片的拷贝，因为 Go 语言的编译器已经对这种情况作了优化。
+
+![golang-slice-append](go语言设计与实现.assets/e40a9d7ff091457f8f0dc7260065f52c.png)
+
+**图 3-4 向 Go 语言的切片追加元素**
+
+
+
+到这里我们已经通过 `append` 关键字被转换的控制流了解了在切片容量足够时如何向切片中追加元素，但是当切片的容量不足时就会调用 [`runtime.growslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L76-L191) 函数为切片扩容，**扩容就是为切片分配一块新的内存空间并将原切片的元素全部拷贝过去**，我们分几部分分析该方法：
+
+```
+func growslice(et *_type, old slice, cap int) slice {
+    newcap := old.cap
+    doublecap := newcap + newcap
+    if cap > doublecap {
+        newcap = cap
+    } else {
+        if old.len < 1024 {
+            newcap = doublecap
+        } else {
+            for 0 < newcap && newcap < cap {
+                newcap += newcap / 4
+            }
+            if newcap <= 0 {
+                newcap = cap
+            }
+        }
+    }
+```
+
+在分配内存空间之前需要先确定新的切片容量，Go 语言根据切片的当前容量选择不同的策略进行扩容：
+
+- 如果期望容量大于当前容量的两倍就会使用期望容量；
+- 如果当前切片容量小于 1024 就会将容量翻倍；
+- 如果当前切片容量大于 1024 就会每次增加 25% 的容量，直到新容量大于期望容量；确定了切片的容量之后，就可以计算切片中新数组占用的内存了，计算的方法就是将目标容量和元素大小相乘，计算新容量时可能会发生溢出或者请求的内存超过上限，在这时就会直接 `panic`，不过相关的代码在这里就被省略了：
+
+```
+    var overflow bool
+    var newlenmem, capmem uintptr
+    switch {
+    ...
+    default:
+        lenmem = uintptr(old.len) * et.size
+        newlenmem = uintptr(cap) * et.size
+        capmem, _ = math.MulUintptr(et.size, uintptr(newcap))
+        capmem = roundupsize(capmem)
+        newcap = int(capmem / et.size)
+    }
+    ...
+    var p unsafe.Pointer
+    if et.kind&kindNoPointers != 0 {
+        p = mallocgc(capmem, nil, false)
+        memclrNoHeapPointers(add(p, newlenmem), capmem-newlenmem)
+    } else {
+        p = mallocgc(capmem, et, true)
+        if writeBarrier.enabled {
+            bulkBarrierPreWriteSrcOnly(uintptr(p), uintptr(old.array), lenmem)
+        }
+    }
+    memmove(p, old.array, lenmem)
+    return slice{p, old.len, newcap}
+}
+```
+
+如果切片中元素不是指针类型，那么就会调用 `memclrNoHeapPointers` 将超出切片当前长度的位置清空并在最后使用 `memmove` 将原数组内存中的内容拷贝到新申请的内存中。这里的 `memclrNoHeapPointers` 和 `memmove` 都是用目标机器上的汇编指令实现的，在这里就不展开介绍了。
+
+[`runtime.growslice`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L76-L191) 函数最终会返回一个新的 `slice` 结构，其中包含了新的数组指针、大小和容量，这个返回的三元组最终会改变原有的切片，帮助 `append` 完成元素追加的功能。
+
+
+
+### 3.2.5 拷贝切片
+
+切片的拷贝虽然不是一个常见的操作类型，但是却是我们学习切片实现原理必须要谈及的一个问题，当我们使用 `copy(a, b)` 的形式对切片进行拷贝时，编译期间的 [`cmd/compile/internal/gc.copyany`](https://github.com/golang/go/blob/bf4990522263503a1219372cd8f1ee9422b51324/src/cmd/compile/internal/gc/walk.go#L2980-L3040) 函数也会分两种情况进行处理，如果当前 `copy` 不是在运行时调用的，`copy(a, b)` 会被直接转换成下面的代码：
+
+```
+n := len(a)
+if n > len(b) {
+    n = len(b)
+}
+if a.ptr != b.ptr {
+    memmove(a.ptr, b.ptr, n*sizeof(elem(a))) 
+}
+```
+
+其中 `memmove` 会负责**对内存进行拷贝**，在其他情况下，编译器会使用 [`runtime.slicecopy`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/runtime/slice.go#L197-L230) 函数替换运行期间调用的 `copy`，例如：`go copy(a, b)`：
+
+```go
+func slicecopy(to, fm slice, width uintptr) int {
+    if fm.len == 0 || to.len == 0 {
+        return 0
+    }
+    n := fm.len
+    if to.len < n {
+        n = to.len
+    }
+    if width == 0 {
+        return n
+    }
+    ...
+    size := uintptr(n) * width
+    if size == 1 {
+        *(*byte)(to.array) = *(*byte)(fm.array)
+    } else {
+        memmove(to.array, fm.array, size)
+    }
+    return n
+}
+```
+
+上述函数的实现非常直接，两种不同的拷贝方式一般都会通过 `memmove` 将**整块内存**中的内容拷贝到目标的内存区域中：
+
+![golang-slice-copy](go语言设计与实现.assets/c86840ae1b0631fb99c857eaab954d4a.png)
+
+**图 3-5 Go 语言切片的拷贝**
+
+相比于依次对元素进行拷贝，这种方式能够提供更好的性能，但是需要注意的是，哪怕使用 `memmove` 对内存成块进行拷贝，但是这个操作还是会占用非常多的资源，在大切片上执行拷贝操作时一定要注意性能影响。
+
+
+
+### 3.2.6 小结
+
+切片的很多功能都是在运行时实现的了，无论是初始化切片，还是对切片进行追加或扩容都需要运行时的支持，需要注意的是在遇到大切片扩容或者复制时可能会发生大规模的内存拷贝，一定要在使用时减少这种情况的发生避免对程序的性能造成影响。
+
+------
+
+- cmd/compile: move slice construction to callers of makeslice https://github.com/golang/go/commit/020a18c545bf49ffc087ca93cd238195d8dcc411#diff-d9238ca551e72b3a80da9e0da10586a4[↩︎](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md#fnref:1)
+
+
+
+## 3.3 哈希表
+
+这一节会介绍 Go 语言中的另一个集合元素 — 哈希，也就是 Map 的实现原理；哈希表是除了数组之外，最常见的数据结构，几乎所有的语言都会有数组和哈希表这两种集合元素，有的语言将数组实现成列表，有的语言将哈希表称作结构体或者字典，但是它们是两种设计集合元素的思路，数组用于表示元素的序列，而哈希表示的是键值对之间映射关系，只是不同语言的叫法和实现稍微有些不同。
+
+[哈希表](https://en.wikipedia.org/wiki/Hash_table)[1](https://www.bookstack.cn/read/draveness-golang/8a6fa5746b8fbe7e.md#fn:1)是一种古老的数据结构，在 **1953 年**就有人使用拉链法实现了哈希表，它能够根据键（Key）直接访问内存中的存储位置，也就是说我们能够直接通过键找到该键对应的一个值。
+
+
+
+### 3.3.1 设计原理
+
+哈希表是计算机科学中的最重要数据结构之一，这不仅因为它 `O(1)` 的读写性能非常优秀，还因为它提供了键值之间的映射。想要实现一个性能优异的哈希表，需要注意两个关键点 —— **哈希函数和冲突解决方法**。
+
+#### 哈希函数
+
+实现哈希表的关键点在于如何选择哈希函数，哈希函数的选择在很大程度上能够决定哈希表的读写性能，在理想情况下，哈希函数应该能够将不同键能够地映射到不同的索引上，这要求**哈希函数输出范围大于输入范围**，但是由于键的数量会远远大于映射的范围，所以在实际使用时，这个理想的结果是不可能实现的。
+
+![perfect-hash-function](go语言设计与实现.assets/7c2327586ef7ffee91a3e179bfbfa306.png)
+
+**图 3-7 完美哈希函数**
+
+比较实际的方式是让哈希函数的结果能够尽可能的均匀分布，然后通过工程上的手段解决哈希碰撞的问题，但是哈希的结果一定要尽可能均匀，结果不均匀的哈希函数会造成更多的冲突并导致更差的读写性能。
+
+![bad-hash-function](go语言设计与实现.assets/d2a41ce657f8c70a0162f0f0ea8ebf6f.png)
+
+**图 3-8 不均匀哈希函数**
+
+在一个使用结果较为均匀的哈希函数中，哈希的增删改查都需要 `O(1)` 的时间复杂度，但是非常不均匀的哈希函数会导致所有的操作都会占用最差 `O(n)` 的复杂度，所以在哈希表中使用好的哈希函数是至关重要的。
+
+
+
+#### 冲突解决
+
+就像我们之前所提到的，在通常情况下，哈希函数输入的范围一定会远远大于输出的范围，所以在使用哈希表时一定会遇到冲突，哪怕我们使用了完美的哈希函数，当输入的键足够多最终也会造成冲突。
+
+然而我们的哈希函数往往都是不完美的，输出的范围是有限的，所以一定会发生哈希碰撞，这时就需要一些方法来解决哈希碰撞的问题，常见方法的就是开放寻址法和拉链法。
+
+
+
+##### 开放寻址法
+
+[开放寻址法](https://en.wikipedia.org/wiki/Open_addressing)【[2](https://www.bookstack.cn/read/draveness-golang/8a6fa5746b8fbe7e.md#fn:2)】是一种在哈希表中解决哈希碰撞的方法，这种方法的核心思想是**对数组中的元素依次探测和比较以判断目标键值对是否存在于哈希表中**，如果我们使用开放寻址法来实现哈希表，那么在支撑哈希表的数据结构就是**数组**，不过因为数组的长度有限，存储 `(author, draven)` 这个键值对时会从如下的**索引开始遍历**：
+
+```
+index := hash("author") % array.len
+```
+
+当我们向当前哈希表写入新的数据时发生了冲突，就会将键值对写入到下一个不为空的位置：
+
+![open-addressing-and-set](go语言设计与实现.assets/dd9a2e7e029329af406f14e6a58fa18d.png)
+
+**图 3-9 开放地址法写入数据**
+
+
+
+如上图所示，当 Key3 与已经存入哈希表中的两个键值对 Key1 和 Key2 发生冲突时，Key3 会被写入 Key2 后面的空闲内存中；当我们再去读取 Key3 对应的值时就会先对键进行哈希并取模，这会帮助我们找到 Key1，因为 Key1 与我们期望的键 Key3 不匹配，所以会继续查找后面的元素，直到内存为空或者找到目标元素。
+
+![open-addressing-and-get](go语言设计与实现.assets/3e558aa412550d7bfa40b32f561fc0db.png)
+
+**图 3-9 开放地址法读取数据**
+
+当需要查找某个键对应的值时，就会从索引的位置开始对数组进行线性探测，找到目标键值对或者空内存就意味着这一次查询操作的结束。
+
+开放寻址法中对性能影响最大的就是**装载因子**，它是数组中元素的数量与数组大小的比值，随着装载因子的增加，线性探测的平均用时就会逐渐增加，这会同时影响哈希表的读写性能，当装载率超过 70% 之后，哈希表的性能就会急剧下降，而一旦装载率达到 100%，整个哈希表就会完全失效，这时查找任意元素都需要遍历数组中全部的元素，所以在实现哈希表时一定要时刻关注装载因子的变化。
+
+
+
+##### 拉链法
+
+与开放地址法相比，拉链法是哈希表中最常见的实现方法，大多数的编程语言都用拉链法实现哈希表，它的实现比较开放地址法稍微复杂一些，但是**平均查找的长度也比较短，各个用于存储节点的内存都是动态申请的，可以节省比较多的存储空间**。
+
+**实现拉链法一般会使用数组加上链表**，不过有一些语言会在拉链法的哈希中引入红黑树以优化性能，拉链法会使用链表数组作为哈希底层的数据结构，我们可以将它看成一个可以扩展的『二维数组』：
+
+![separate-chaing-and-set](go语言设计与实现.assets/a47d5faf4c8efed3cd903d90b8f2fc72.png)
+
+**图 3-10 拉链法写入数据**
+
+如上图所示，当我们需要将一个键值对 `(Key6, Value6)` 写入哈希表时，键值对中的键 `Key6` 都会先经过一个哈希函数，哈希函数返回的哈希会帮助我们选择一个桶，和开放地址法一样，选择桶的方式就是直接对哈希返回的结果取模：
+
+```
+index := hash("Key6") % array.len
+```
+
+选择了 2 号桶之后就可以遍历当前桶中的链表了，在遍历链表的过程中会遇到以下两种情况：
+
+- 找到键相同的键值对 —— 更新键对应的值；
+- 没有找到键相同的键值对 —— 在链表的末尾追加新键值对；将键值对写入哈希之后，要通过某个键在其中获取映射的值，就会经历如下的过程：
+
+![separate-chaing-and-get](go语言设计与实现.assets/796edf3a0694417f6fdf5557241422ba.png)
+
+**图 3-11 拉链法读取数据**
+
+Key11 展示了一个键在哈希表中不存在的例子，当哈希表发现它命中 4 号桶时，它会依次遍历桶中的链表，然而遍历到链表的末尾也没有找到期望的键，所以哈希表中没有该键对应的值。
+
+在一个性能比较好的哈希表中，每一个桶中都应该有 0~1 个元素，有时会有 2~3 个，很少会超过这个数量，计算哈希、定位桶和遍历链表三个过程是哈希表读写操作的主要开销，使用拉链法实现的哈希也有装载因子这一概念：
+
+```
+装载因子 := 元素数量 / 桶数量
+```
+
+与开放地址法一样，拉链法的**装载因子**越大，哈希的读写性能就越差，在一般情况下使用拉链法的哈希表装载因子都不会超过 1，当哈希表的装载因子较大时就会触发哈希的扩容，创建更多的桶来存储哈希中的元素，保证性能不会出现严重的下降。如果有 1000 个桶的哈希表存储了 10000 个键值对，它的性能是保存 1000 个键值对的 1/10，但是仍然比在链表中直接读写好 1000 倍。
+
+
+
+### 3.3.2 数据结构
+
+Go 语言运行时同时使用了多个数据结构组合表示哈希表，其中使用 [`hmap`](https://github.com/golang/go/blob/ed15e82413c7b16e21a493f5a647f68b46e965ee/src/runtime/map.go#L115-L129) 结构体来表示哈希，我们先来看一下这个结构体内部的字段：
+
+```
+type hmap struct {
+    count     int
+    flags     uint8
+    B         uint8
+    noverflow uint16
+    hash0     uint32
+    buckets    unsafe.Pointer
+    oldbuckets unsafe.Pointer
+    nevacuate  uintptr
+    extra *mapextra
+}
+```
+
+- `count` 表示当前哈希表中的元素数量；
+- `B` 表示当前哈希表持有的 `buckets` 数量，但是因为哈希表中桶的数量都 2 的倍数，所以该字段会存储对数，也就是 `len(buckets) == 2^B`；
+- `hash0` 是哈希的种子，它能为哈希函数的结果引入随机性，这个值在创建哈希表时确定，并在调用哈希函数时作为参数传入；
+- `oldbuckets` 是哈希在扩容时用于保存之前 `buckets` 的字段，它的大小是当前 `buckets` 的一半；
+
+- ![hmap-and-buckets](go语言设计与实现.assets/dd9779ba3b8d6758b5ad5f04a01e5ba2.png)
+
+**图 3-12 哈希表的数据结构**
+
+如上图所示哈希表 `hmap` 的桶就是 `bmap`，每一个 `bmap` 都能存储 8 个键值对，当哈希表中存储的数据过多，单个桶无法装满时就会使用 `extra.overflow` 中桶存储溢出的数据。上述两种不同的桶在内存中是连续存储的，我们在这里将它们分别称为**正常桶和溢出桶**，上图中黄色的 `bmap` 就是正常桶，绿色的 `bmap` 是溢出桶，溢出桶是在 Go 语言还使用 C 语言实现时就使用的设计[3](https://www.bookstack.cn/read/draveness-golang/8a6fa5746b8fbe7e.md#fn:3)，由于它能够减少扩容的频率所以一直使用至今。
+
+这个桶的结构体 `bmap` 在 Go 语言源代码中的定义只包含一个简单的 `tophash` 字段，`tophash` 存储了键的哈希的高 8 位，通过比较不同键的哈希的高 8 位可以减少访问键值对次数以提高性能：
+
+```
+type bmap struct {
+    tophash [bucketCnt]uint8
+}
+```
+
+`bmap` 结构体其实不止包含 `tophash` 字段，**由于哈希表中可能存储不同类型的键值对并且 Go 语言也不支持泛型，**所以键值对占据的内存空间大小只能在编译时进行推导，这些字段在运行时也都是通过计算内存地址的方式直接访问的，所以它的定义中就没有包含这些字段，但是我们能根据编译期间的 [`cmd/compile/internal/gc.bmap`](https://github.com/golang/go/blob/be64a19d99918c843f8555aad580221207ea35bc/src/cmd/compile/internal/gc/reflect.go#L82-L187) 函数对它的结构重建：
+
+```
+type bmap struct {
+    topbits  [8]uint8
+    keys     [8]keytype
+    values   [8]valuetype
+    pad      uintptr
+    overflow uintptr
+}
+```
+
+如果哈希表存储的数据逐渐增多，我们会对哈希表进行扩容或者使用额外的桶存储溢出的数据，不会让单个桶中的数据超过 8 个，不过溢出桶只是临时的解决方案，创建过多的溢出桶最终也会导致哈希的扩容。
+
+从 Go 语言哈希的定义中就可以发现，它比前面两节提到的数组和切片复杂得多，结构体中不仅包含大量字段，还使用了较多的复杂结构，在后面的小节中我们会详细介绍不同字段的作用。
+
+
+
+### 3.3.3 初始化
+
+既然已经介绍了常见哈希表的基本原理和实现方法，那么可以开始分析 Go 语言中哈希表的实现，首先要分析的就是在 Go 语言中初始化哈希的两种方法 — 通过字面量和运行时。
+
+#### 字面量
+
+目前的现代编程语言基本都支持使用字面量的方式初始化哈希，一般都会使用 `key: value` 的语法来表示键值对，Go 语言中也不例外：
+
+```
+hash := map[string]int{
+    "1": 2,
+    "3": 4,
+    "5": 6,
+}
+```
+
+我们需要在初始化哈希时声明键值对的类型，这种使用字面量初始化的方式最终都会通过 [`cmd/compile/internal/gc.maplit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L768-L873) 函数初始化，我们来分析一下 [`cmd/compile/internal/gc.maplit`](https://github.com/golang/go/blob/f07059d949057f414dd0f8303f93ca727d716c62/src/cmd/compile/internal/gc/sinit.go#L768-L873) 函数初始化哈希的过程：
+
+```
+func maplit(n *Node, m *Node, init *Nodes) {
+    a := nod(OMAKE, nil, nil)
+    a.Esc = n.Esc
+    a.List.Set2(typenod(n.Type), nodintconst(int64(n.List.Len())))
+    litas(m, a, init)
+    var stat, dyn []*Node
+    for _, r := range n.List.Slice() {
+        stat = append(stat, r)
+    }
+    if len(stat) > 25 {
+        ...
+    } else {
+        addMapEntries(m, stat, init)
+    }
+}
+```
+
+当哈希表中的元素数量少于或者等于 25 个时，编译器会直接调用 `addMapEntries` 将字面量初始化的结构体转换成以下的代码，将所有的键值对一次加入到哈希表中：
+
+```
+hash := make(map[string]int, 3)
+hash["1"] = 2
+hash["3"] = 4
+hash["5"] = 6
+```
+
+这种初始化的方式与前面两节分析的[数组](https://www.bookstack.cn/read/draveness-golang/79255565262cc9f6.md)和[切片](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md)的几乎完全相同，由此看来集合类型的初始化在 Go 语言中有着相同的处理方式和逻辑。
+
+一旦哈希表中元素的数量超过了 25 个，就会在编译期间创建两个数组分别存储键和值的信息，这些键值对会通过一个如下所示的 for 循环加入目标的哈希：
+
+```
+hash := make(map[string]int, 26)
+vstatk := []string{"1", "2", "3", ... ， "26"}
+vstatv := []int{1, 2, 3, ... , 26}
+for i := 0; i < len(vstak); i++ {
+    hash[vstatk[i]] = vstatv[i]
+}
+```
+
+这里展开的两个切片 `vstatk` 和 `vstatv` 还会被编辑器继续展开，具体的展开方式可以阅读上一节了解[切片的初始化](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md)，不过无论使用哪种方法，使用字面量初始化的过程都会使用 Go 语言中的关键字 `make` 来创建新的哈希并通过最原始的 `[]` 语法向哈希追加元素。
+
+
+
+#### 运行时
+
+无论 `make` 是从哪里来的，只要我们使用 `make` 创建哈希，Go 语言编译器都会在[类型检查](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md)期间将它们转换成对 [`runtime.makemap`](https://github.com/golang/go/blob/dcd3b2c173b77d93be1c391e3b5f932e0779fb1f/src/runtime/map.go#L303-L336) 的调用，使用字面量来初始化哈希也只是语言提供的辅助工具，最后调用的都是 [`runtime.makemap`](https://github.com/golang/go/blob/dcd3b2c173b77d93be1c391e3b5f932e0779fb1f/src/runtime/map.go#L303-L336)：
+
+```
+func makemap(t *maptype, hint int, h *hmap) *hmap {
+    mem, overflow := math.MulUintptr(uintptr(hint), t.bucket.size)
+    if overflow || mem > maxAlloc {
+        hint = 0
+    }
+    if h == nil {
+        h = new(hmap)
+    }
+    h.hash0 = fastrand()
+    B := uint8(0)
+    for overLoadFactor(hint, B) {
+        B++
+    }
+    h.B = B
+    if h.B != 0 {
+        var nextOverflow *bmap
+        h.buckets, nextOverflow = makeBucketArray(t, h.B, nil)
+        if nextOverflow != nil {
+            h.extra = new(mapextra)
+            h.extra.nextOverflow = nextOverflow
+        }
+    }
+    return h
+}
+```
+
+这个函数的执行过程会分成以下几个部分：
+
+- 计算哈希占用的内存是否溢出或者超出能分配的最大值；
+- 调用 `fastrand` 获取一个随机的哈希种子；
+- 根据传入的 `hint` 计算出需要的最小需要的桶的数量；
+- 使用 [`runtime.makeBucketArray`](https://github.com/golang/go/blob/dcd3b2c173b77d93be1c391e3b5f932e0779fb1f/src/runtime/map.go#L344-L387) 创建用于保存桶的数组；[`runtime.makeBucketArray`](https://github.com/golang/go/blob/dcd3b2c173b77d93be1c391e3b5f932e0779fb1f/src/runtime/map.go#L344-L387) 函数会根据传入的 `B` 计算出的需要创建的桶数量在内存中分配一片连续的空间用于存储数据：
+
+```
+func makeBucketArray(t *maptype, b uint8, dirtyalloc unsafe.Pointer) (buckets unsafe.Pointer, nextOverflow *bmap) {
+    base := bucketShift(b)
+    nbuckets := base
+    if b >= 4 {
+        nbuckets += bucketShift(b - 4)
+        sz := t.bucket.size * nbuckets
+        up := roundupsize(sz)
+        if up != sz {
+            nbuckets = up / t.bucket.size
+        }
+    }
+    buckets = newarray(t.bucket, int(nbuckets))
+    if base != nbuckets {
+        nextOverflow = (*bmap)(add(buckets, base*uintptr(t.bucketsize)))
+        last := (*bmap)(add(buckets, (nbuckets-1)*uintptr(t.bucketsize)))
+        last.setoverflow(t, (*bmap)(buckets))
+    }
+    return buckets, nextOverflow
+}
+```
+
+当桶的数量小于 $2^4$ 时，由于数据较少、使用溢出桶的可能性较低，这时就会省略创建的过程以减少额外开销；当桶的数量多于 $2^4$ 时，就会额外创建 $2^{B-4}$ 个溢出桶，根据上述代码，我们能确定正常桶和溢出桶在内存中的存储空间是连续的，只是被 `hmap` 中的不同字段引用。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 第四章 语言基础
+
+- [4.1 函数调用](https://www.bookstack.cn/read/draveness-golang/5de3a4330de09d9e.md)
+- [4.2 接口](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md)
+- [4.3 反射](https://www.bookstack.cn/read/draveness-golang/f42669fa0cd10c64.md)
+- [4.4 推荐阅读](https://www.bookstack.cn/read/draveness-golang/82497e663992a6f7.md)
+
+
+
+# 第五章 常用关键字
+
+- [5.1 for 和 range](https://www.bookstack.cn/read/draveness-golang/816b8b0f4e15285f.md)
+- [5.2 select](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md)
+- [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md)
+- [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
+- [5.5 make 和 new](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md)
+- [5.6 推荐阅读](https://www.bookstack.cn/read/draveness-golang/d9282a6420fd069c.md)
+
+
+
+
+
+# 第六章 并发编程
+
+- [6.1 上下文 Context](https://www.bookstack.cn/read/draveness-golang/6ee8389651c21ac5.md)
+- [6.2 同步原语与锁](https://www.bookstack.cn/read/draveness-golang/b103f6e877e4c9bd.md)
+- [6.3 定时器](https://www.bookstack.cn/read/draveness-golang/326bb5c45fbed045.md)
+- [6.4 Channel](https://www.bookstack.cn/read/draveness-golang/c666731d5f1a2820.md)
+- [6.5 Goroutine](https://www.bookstack.cn/read/draveness-golang/488ee05eea5e58a3.md)
+
+
+
+# 第七章 内存管理
+
+- [7.1 内存分配器](https://www.bookstack.cn/read/draveness-golang/3a89cfd15249f9fe.md)
+- [7.2 垃圾收集器](https://www.bookstack.cn/read/draveness-golang/30cd28c181a56e61.md)
+- [7.3 栈内存管理](https://www.bookstack.cn/read/draveness-golang/4a6101b89b1d41f1.md)
+
+
+
+# 第八章 元编程
+
+- [8.1 插件系统](https://www.bookstack.cn/read/draveness-golang/6588a87b3f79f21b.md)
+- [8.2 代码生成](https://www.bookstack.cn/read/draveness-golang/19ab6c46e7c9de36.md)
+
+# 第九章 标准库
+
+- [9.1 JSON](https://www.bookstack.cn/read/draveness-golang/f6b06e1693601b3a.md)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
