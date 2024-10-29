@@ -3246,6 +3246,821 @@ Go 语言使用栈作为参数和返回值传递的方法是综合考虑后的�
 ## 4.2 接口
 
 - [4.2 接口](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md)
+
+Go 语言中的接口就是一组方法的签名（集合），它是 Go 语言的重要组成部分。使用接口能够让我们更好地组织并写出易于测试的代码，然而很多工程师对 Go的接口了解都非常有限，也不清楚其底层的实现原理，这成为了开发高性能服务的最大阻碍。
+
+本节会介绍使用接口时遇到的一些常见问题以及它的设计与实现，包括接口的类型转换、类型断言以及动态派发机制，帮助各位读者更好地理解接口类型。
+
+### 4.2.1 概述
+
+**在计算机科学中，接口是计算机系统中多个组件共享的边界，不同的组件能够在边界上交换信息**[1](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:1)。如图 4-5，接口的本质就是引入一个新的中间层，调用方可以通过接口与具体实现分离，解除上下游的耦合，上层的模块不再需要依赖下层的具体模块，只需要依赖一个约定好的接口。
+
+![golang-interface](go语言设计与实现.assets/7858ccfb5ae7bc7ea2ca72425bde0339.png)
+
+**图 4-5 上下游通过接口解耦**
+
+这种面向接口的编程方式有着非常强大的生命力，无论是在框架还是操作系统中我们都能够找到接口的身影。可移植操作系统接口（Portable Operating System Interface，POSIX)[2](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:2)就是一个典型的例子，它定义了应用程序接口和命令行等标准，为计算机软件带来了可移植性 — 只要操作系统实现了 POSIX，计算机软件就可以直接在不同操作系统上运行。
+
+除了解耦有依赖关系的上下游，接口还能够帮助我们隐藏底层实现，减少关注点。《计算机程序的构造和解释》中有这么一句话：
+
+> 代码必须能够被人阅读，只是机器恰好可以执行[3](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:3)
+
+人能够同时处理的信息非常有限，定义良好的接口能够隔离底层的实现，让我们将重点放在当前的代码片段中。SQL 就是接口的一个例子，当我们使用 SQL 语句查询数据时，其实不需要关心底层数据库的具体实现，我们只在乎 SQL 返回的结果是否符合预期。
+
+![sql-and-databases](go语言设计与实现.assets/e8633919e287edf2f68b643408ebc902.png)
+
+**图 4-6 SQL 和不同数据库**
+
+计算机科学中的接口是一个比较抽象的概念，但是编程语言中接口的概念就更加具体。
+
+Go 语言中的接口是一种内置的类型，它定义了一组方法的签名，这一小节会先介绍 Go 语言接口的几个基本概念以及常见问题，为之后介绍实现原理做一些铺垫。
+
+#### 隐式接口
+
+很多面向对象语言都有接口这一概念，例如 Java 和 C#。Java 的接口不仅可以定义方法签名，还可以定义变量，这些定义的变量可以直接在实现接口的类中使用：
+
+```java
+public interface MyInterface {
+    public String hello = "Hello";
+    public void sayHello();
+}
+```
+
+上述代码定义了一个必须实现的方法 `sayHello` 和一个会注入到实现类的变量 `hello`。在下面的代码中，`MyInterfaceImpl` 就实现了 `MyInterface` 接口：
+
+```java
+public class MyInterfaceImpl implements MyInterface {
+    public void sayHello() {
+        System.out.println(MyInterface.hello);
+    }
+}
+```
+
+
+
+Java 中的类必须通过上述方式显式地声明实现的接口，但是在 Go 语言中实现接口就不需要使用类似的方式。首先，我们简单了解一下在 Go 语言中如何定义接口。定义接口需要使用 `interface` 关键字，在接口中我们只能定义方法签名，不能包含成员变量，一个常见的 Go 语言接口是这样的：
+
+```
+type error interface {
+    Error() string
+}
+```
+
+
+
+如果一个类型需要实现 `error` 接口，那么它只需要实现 `Error() string` 方法，下面的 `RPCError` 结构体就是 `error` 接口的一个实现：
+
+```go
+type RPCError struct {
+    Code    int64
+    Message string
+}
+func (e *RPCError) Error() string {
+    return fmt.Sprintf("%s, code=%d", e.Message, e.Code)
+}
+```
+
+细心的读者可能会发现上述代码根本就没有 `error` 接口的影子，这是为什么呢？Go 语言中**接口的实现都是隐式的**，我们只需要实现 `Error() string` 方法实现了 `error` 接口。Go 语言实现接口的方式与 Java 完全不同：
+
+- 在 Java 中：实现接口需要显式的声明接口并实现所有方法；
+- 在 Go 中：实现接口的所有方法就隐式的实现了接口；
+
+我们使用上述 `RPCError` 结构体时并不关心它实现了哪些接口，**Go 语言只会在传递参数、返回参数以及变量赋值时才会对某个类型是否实现接口进行检查**，这里举几个例子来演示发生接口类型检查的时机：
+
+
+
+```go
+func main() {
+    var rpcErr error = NewRPCError(400, "unknown err") // typecheck1
+    err := AsErr(rpcErr) // typecheck2
+    println(err) 
+}
+func NewRPCError(code int64, msg string) error {
+    return &RPCError{ // typecheck3
+        Code:    code,
+        Message: msg,
+    }
+}
+func AsErr(err error) error {
+    return err
+}
+```
+
+Go 语言会[编译期间](https://www.bookstack.cn/read/draveness-golang/9e405d643b49d00e.md)对代码进行类型检查，上述代码总共触发了三次类型检查：
+
+- 将 `*RPCError` 类型的变量赋值给 `error` 类型的变量 `rpcErr`；
+- 将 `*RPCError` 类型的变量 `rpcErr` 传递给签名中参数类型为 `error` 的 `AsErr` 函数；
+- 将 `*RPCError` 类型的变量从函数签名的返回值类型为 `error` 的 `NewRPCError` 函数中返回；从类型检查的过程来看，编译器仅在需要时才对类型进行检查，类型实现接口时只需要实现接口中的全部方法，不需要像 Java 等编程语言中一样显式声明。
+
+
+
+#### 类型
+
+接口也是 Go 语言中的一种类型，它能够出现在变量的定义、函数的入参和返回值中并对它们进行约束，不过 Go 语言中有两种略微不同的接口，一种是带有一组方法的接口，另一种是不带任何方法的 `interface{}`：
+
+![golang-different-interface](go语言设计与实现.assets/12abffc504eaf4e9411b15a5e8f8c784.png)
+
+**图 4-7 Go 语言中的两种接口**
+
+
+
+Go 语言使用 `iface` 结构体表示第一种接口，使用 `eface` 结构体表示第二种空接口，两种接口虽然都使用 `interface` 声明，但是由于后者在 Go 语言中非常常见，所以在实现时使用了特殊的类型。
+
+需要注意的是，与 C 语言中的 `void ` *不同，`interface{}` 类型**不是任意类型**，如果我们将类型转换成了 `interface{}` 类型，这边的变量在运行期间的类型也发生了变化，获取变量类型时就会得到 `interface{}`。
+
+```go
+package main
+func main() {
+    type Test struct{}
+    v := Test{}
+    Print(v)
+}
+func Print(v interface{}) {
+    println(v)
+}
+```
+
+上述函数不接受任意类型的参数，只接受 `interface{}` 类型的值，在调用 `Print` 函数时会对参数 `v` 进行类型转换，将原来的 `Test` 类型转换成 `interface{}` 类型，我们会在本节后面介绍类型转换的过程和原理。
+
+
+
+#### 指针和接口
+
+在 Go 语言中同时使用指针和接口时会发生一些让人困惑的问题，接口在定义一组方法时没有对实现的接收者做限制，所以我们会看到『一个类型』实现接口的两种方式：
+
+![golang-interface-and-pointer](go语言设计与实现.assets/c2c845570c614588153a36d3be1590e1.png)
+
+**图 4-8 结构体和指针实现接口**
+
+这是因为**结构体类型和指针类型是完全不同的**，就像我们不能向一个接受指针的函数传递结构体，在实现接口时这两种类型也不能划等号。但是上图中的两种实现不可以同时存在，Go 语言的编译器会在结构体类型和指针类型都实现一个方法时报错 —— `method redeclared`。
+
+
+
+对 `Cat` 结构体来说，它**在实现接口时可以选择接受者的类型**，即结构体或者结构体指针，在初始化时也可以初始化成结构体或者指针。下面的代码总结了如何使用结构体、结构体指针实现接口，以及如何使用结构体、结构体指针初始化变量。
+
+```
+type Cat struct {}
+type Duck interface { ... }
+
+type (c  Cat) Quack {}  // 使用结构体实现接口
+type (c *Cat) Quack {}  // 使用结构体指针实现接口
+
+var d Duck = Cat{}      // 使用结构体初始化变量
+var d Duck = &Cat{}     // 使用结构体指针初始化变量
+```
+
+
+
+实现接口的类型和初始化返回的类型两个维度组成了四种情况，这四种情况并不都能通过编译器的检查：
+
+|                      | 结构体实现接口 | 结构体指针实现接口 |
+| :------------------- | :------------- | :----------------- |
+| 结构体初始化变量     | 通过           | 不通过             |
+| 结构体指针初始化变量 | 通过           | 通过               |
+
+四种中只有『使用指针实现接口，使用结构体初始化变量』无法通过编译，其他的三种情况都可以正常执行。当实现接口的类型和初始化变量时返回的类型时相同时，代码通过编译是理所应当的：
+
+- 方法接受者和初始化类型都是结构体；
+- 方法接受者和初始化类型都是结构体指针；
+
+而剩下的两种方式为什么一种能够通过编译，另一种无法通过编译呢？我们先来看一下能够通过编译的情况，
+
+也就是方法的接受者是结构体，而初始化的变量是结构体指针：
+
+```go
+type Cat struct{}
+func (c Cat) Quack() {
+    fmt.Println("meow")
+}
+func main() {
+    var c Duck = &Cat{}
+    c.Quack()
+}
+```
+
+作为指针的 `&Cat{}` 变量能够**隐式地获取**到指向的结构体，所以能在结构体上调用 `Walk` 和 `Quack` 方法（可以将结构体变量赋值给结构体指针，指针会隐式获取对应结构体的指针）。我们可以将这里的调用理解成 C 语言中的 `d->Walk()` 和 `d->Speak()`，它们都会先获取指向的结构体再执行对应的方法。
+
+但是如果我们将上述代码中方法的接受者和初始化的类型进行交换，代码就无法通过编译了：
+
+```
+type Duck interface {
+    Quack()
+}
+type Cat struct{}
+func (c *Cat) Quack() {
+    fmt.Println("meow")
+}
+func main() {
+    var c Duck = Cat{}
+    c.Quack()
+}
+$ go build interface.go
+./interface.go:20:6: cannot use Cat literal (type Cat) as type Duck in assignment:
+    Cat does not implement Duck (Quack method has pointer receiver)
+```
+
+
+
+![image-20241028162550344](go语言设计与实现.assets/image-20241028162550344.png)
+
+编译器会提醒我们：`Cat` 类型没有实现 `Duck` 接口，`Quack` 方法的接受者是指针。这两个报错对于刚刚接触 Go 语言的开发者比较难以理解，如果我们想要搞清楚这个问题，首先要知道 Go 语言在[传递参数](https://www.bookstack.cn/read/draveness-golang/5de3a4330de09d9e.md)时都是传值的。
+
+![golang-interface-method-receive](go语言设计与实现.assets/c129330373c0d63f2760c54b837b586b.png)
+
+**图 4-9 实现接口的接受者类型**
+
+如上图所示，无论上述代码中初始化的变量 `c` 是 `Cat{}` 还是 `&Cat{}`，使用 `c.Quack()` 调用方法时都会发生值拷贝：
+
+- 如图 4-9 左侧，对于 `&Cat{}` 来说，这意味着拷贝一个新的 `&Cat{}` 指针，这个指针与原来的指针指向一个相同并且唯一的结构体，所以编译器可以隐式的对变量解引用（dereference）获取指针指向的结构体；
+- 如图 4-9 右侧，对于 `Cat{}` 来说，这意味着 `Quack` 方法会接受一个全新的 `Cat{}`，因为方法的参数是 `*Cat`，编译器不会无中生有创建一个新的指针；即使编译器可以创建新指针，这个指针指向的也不是最初调用该方法的结构体；
+
+
+
+上面的分析解释了指针类型的现象，当我们使用指针实现接口时，只有指针类型的变量才会实现该接口；当我们使用结构体实现接口时，指针类型和结构体类型都会实现该接口。当然这并不意味着我们应该一律使用结构体实现接口，这个问题在实际工程中也没那么重要，在这里我们只想解释现象背后的原因。
+
+
+
+#### nil 和 non-nil
+
+我们可以通过一个例子理解**『Go 语言的接口类型不是任意类型』**这一句话，下面的代码在 `main` 函数中初始化了一个 `*TestStruct` 结构体指针，由于指针的零值是 `nil`，所以变量 `s` 在初始化之后也是 `nil`：
+
+```go
+package main
+type TestStruct struct{}
+func NilOrNot(v interface{}) bool {
+    return v == nil
+}
+func main() {
+    var s *TestStruct
+    fmt.Println(s == nil)      // #=> true
+    fmt.Println(NilOrNot(s))   // #=> false
+}
+$ go run main.go
+true
+false
+```
+
+我们简单总结一下上述代码执行的结果：
+
+- 将上述变量与 `nil` 比较会返回 `true`；
+- 将上述变量传入 `NilOrNot` 方法并与 `nil` 比较会返回 `false`；
+
+出现上述现象的原因是 —— 调用 `NilOrNot` 函数时发生了**隐式的类型转换**，除了向方法传入参数之外，变量的赋值也会触发隐式类型转换。在类型转换时，`*TestStruct` 类型会转换成 `interface{}` 类型，转换后的变量不仅包含转换前的变量，还包含变量的类型信息 `TestStruct`，所以转换后的变量与 `nil` 不相等。
+
+
+
+### 4.2.2 数据结构
+
+相信各位读者已经对 Go 语言的接口有了一些的了解，接下来我们从源代码和汇编指令层面介绍接口的底层数据结构。
+
+Go 语言根据接口类型『是否包含一组方法』对类型做了不同的处理。我们使用 `iface` 结构体表示包含方法的接口；使用 `eface` 结构体表示不包含任何方法的 `interface{}` 类型，`eface` 结构体在 Go 语言的定义是这样的：
+
+```go
+type eface struct { // 16 bytes
+    _type *_type
+    data  unsafe.Pointer
+}
+```
+
+由于 `interface{}` 类型不包含任何方法，所以它的结构也相对来说比较简单，只包含指向底层数据和类型的两个指针。从上述结构我们也能推断出 — Go 语言中的任意类型都可以转换成 `interface{}` 类型。
+
+另一个用于表示接口的结构体就是 `iface`，这个结构体中有指向原始数据的指针 `data`，不过更重要的是 `itab` 类型中的 `tab` 字段。
+
+```
+type iface struct { // 16 bytes
+    tab  *itab
+    data unsafe.Pointer
+}
+```
+
+接下来我们将详细分析 Go 语言接口中的这两个类型，即 `_type` 和 `itab`。
+
+
+
+#### 类型结构体
+
+`_type` 是 Go 语言类型的运行时表示。下面是运行时包中的结构体，结构体包含了很多元信息，例如：类型的大小、哈希、对齐以及种类等。
+
+```go
+type _type struct {
+    size       uintptr
+    ptrdata    uintptr
+    hash       uint32
+    tflag      tflag
+    align      uint8
+    fieldAlign uint8
+    kind       uint8
+    equal      func(unsafe.Pointer, unsafe.Pointer) bool
+    gcdata     *byte
+    str        nameOff
+    ptrToThis  typeOff
+}
+```
+
+- `size` 字段存储了类型占用的内存空间，为内存空间的分配提供信息；
+- `hash` 字段能够帮助我们快速确定类型是否相等；
+- `equal` 字段用于判断当前类型的多个对象是否相等，该字段是为了减少 Go 语言二进制包大小从 `typeAlg` 结构体中迁移过来的[4](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:4)；
+
+我们只需要对 `_type` 结构体中的字段有一个大体的概念，不需要详细理解所有字段的作用和意义。
+
+
+
+#### itab 结构体
+
+`itab` 结构体是接口类型的核心组成部分，每一个 `itab` 都占 32 字节的空间，我们可以将其看成接口类型和具体类型的组合，它们分别用 `inter` 和 `_type` 两个字段表示：
+
+```go
+type itab struct { // 32 bytes
+    inter *interfacetype
+    _type *_type
+    hash  uint32
+    _     [4]byte
+    fun   [1]uintptr
+}
+```
+
+除了 `inter` 和 `_type` 两个用于表示类型的字段之外，上述结构体中的另外两个字段也有自己的作用：
+
+- `hash` 是对 `_type.hash` 的拷贝，当我们想将 `interface` 类型转换成具体类型时，可以使用该字段快速判断目标类型和具体类型 `_type` 是否一致；
+- `fun` 是一个动态大小的数组，它是一个用于动态派发的虚函数表，存储了一组函数指针。**虽然该变量被声明成大小固定的数组，但是在使用时会通过原始指针获取其中的数据**，所以 `fun` 数组中保存的元素数量是不确定的；
+
+我们会在类型断言中介绍 `hash` 字段的使用，在动态派发一节中介绍 `fun` 数组中存储的函数指针是如何被使用的。
+
+
+
+### 4.2.3 类型转换
+
+既然我们已经了解了接口在运行时的数据结构，接下来会通过几个例子来深入理解接口类型是如何初始化和传递的，这里会介绍在实现接口时使用指针类型和结构体类型的区别。这两种不同的接口实现方式会导致 Go 语言编译器生成不同的汇编代码，带来执行过程上的一些差异。
+
+#### 指针类型
+
+首先我们回到这一节开头提到的 `Duck` 接口的例子，我们使用 `//go:noinline` 指令[5](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:5)禁止 `Quack` 方法的内联编译：
+
+```
+package main
+type Duck interface {
+    Quack()
+}
+type Cat struct {
+    Name string
+}
+//go:noinline
+func (c *Cat) Quack() {
+    println(c.Name + " meow")
+}
+func main() {
+    var c Duck = &Cat{Name: "grooming"}
+    c.Quack()
+}
+```
+
+我们使用编译器将上述代码编译成汇编语言，删掉其中一些对理解接口原理无用的指令并保留与赋值语句 `var c Duck = &Cat{Name: "grooming"}` 相关的代码，我们将生成的汇编指令拆分成三部分分析：
+
+- 结构体 `Cat` 的初始化；
+- 赋值触发的类型转换过程；
+- 调用接口的方法 `Quack()`；我们先来分析结构体 `Cat` 的初始化过程：
+
+```
+LEAQ    type."".Cat(SB), AX                ;; AX = &type."".Cat
+MOVQ    AX, (SP)                           ;; SP = &type."".Cat
+CALL    runtime.newobject(SB)              ;; SP + 8 = &Cat{}
+MOVQ    8(SP), DI                          ;; DI = &Cat{}
+MOVQ    $8, 8(DI)                          ;; StringHeader(DI.Name).Len = 8
+LEAQ    go.string."grooming"(SB), AX       ;; AX = &"grooming"
+MOVQ    AX, (DI)                           ;; StringHeader(DI.Name).Data = &"grooming"
+```
+
+
+
+- 获取 `Cat` 结构体类型指针并将其作为参数放到栈上；
+- 通过 `CALL` 指定调用 [`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 函数，这个函数会以 `Cat` 结构体类型指针作为入参，分配一片新的内存空间并将指向这片内存空间的指针返回到 SP+8 上；
+- SP+8 现在存储了一个指向 `Cat` 结构体的指针，我们将栈上的指针拷贝到寄存器 `DI` 上方便操作；
+- 由于 `Cat` 中只包含一个字符串类型的 `Name` 变量，所以在这里会分别将字符串地址 `&"grooming"` 和字符串长度 `8` 设置到结构体上，最后三行汇编指令等价于 `cat.Name = "grooming"`；字符串在运行时的表示其实就是指针加上字符串长度，在前面的章节[字符串](https://www.bookstack.cn/read/draveness-golang/0bc3143426c7b7ea.md)已经介绍过它的底层表示和实现原理，但是我们这里要看一下初始化之后的 `Cat` 结构体在内存中的表示是什么样的：
+
+![golang-new-struct-pointe](go语言设计与实现.assets/ae2487ad9dfa69afce60fe283e4e521d.png)
+
+**图 4-10 Cat 结构体指针**
+
+因为 `Cat` 结构体的定义中只包含一个字符串，而字符串在 Go 语言中总共占 16 字节，所以每一个 `Cat` 结构体的大小都是 16 字节。初始化 `Cat` 结构体之后就进入了将 `*Cat` 转换成 `Duck` 类型的过程了：
+
+```
+LEAQ    go.itab.*"".Cat,"".Duck(SB), AX    ;; AX = *itab(go.itab.*"".Cat,"".Duck)
+MOVQ    DI, (SP)                           ;; SP = AX
+```
+
+类型转换的过程比较简单，`Duck` 作为一个包含方法的接口，它在底层使用 `iface` 结构体表示。`iface` 结构体包含两个字段，其中一个是指向数据的指针，另一个是表示接口和结构体关系的 `tab` 字段，我们已经通过上一段代码 SP+8 初始化了 `Cat` 结构体指针，这段代码只是将编译期间生成的 `itab` 结构体指针复制到 SP 上：
+
+![golang-struct-pointer-to-iface](go语言设计与实现.assets/2f3839b315cda204c7ed78a9b6c6788c.png)
+
+**图 4-11 Cat 类型转换**
+
+到这里，我们会发现 SP ~ SP+16 共同组成了 `iface` 结构体，而栈上的这个 `iface` 结构体也是 `Quack` 方法的第一个入参。
+
+```
+CALL    "".(*Cat).Quack(SB)                ;; SP.Quack()
+```
+
+上述代码会直接通过 `CALL` 指令完成方法的调用，细心的读者可能会发现一个问题 —— 为什么在代码中我们调用的是 `Duck.Quack` 但生成的汇编是 `*Cat.Quack` 呢？Go 语言的编译器会在编译期间将一些需要动态派发的方法调用改写成对目标方法的直接调用，以减少性能的额外开销。如果在这里禁用编译器优化，就会看到动态派发的过程，我们会在后面分析接口的动态派发以及性能上的额外开销。
+
+
+
+#### 结构体类型
+
+在这里，我们继续修改上一节中的代码，使用结构体类型实现 `Duck` 接口并初始化结构体类型的变量：
+
+```go
+package main
+type Duck interface {
+    Quack()
+}
+type Cat struct {
+    Name string
+}
+//go:noinline
+func (c Cat) Quack() {
+    println(c.Name + " meow")
+}
+func main() {
+    var c Duck = Cat{Name: "grooming"}
+    c.Quack()
+}
+```
+
+如果我们在初始化变量时使用指针类型 `&Cat{Name: "grooming"}` 也能够通过编译，不过生成的汇编代码和上一节中的几乎完全相同，所以这里也就不分析这个情况了。
+
+编译上述的代码会得到如下所示的汇编指令，需要注意的是为了代码更容易理解和分析，这里的汇编指令依然经过了删减，不过不会影响具体的执行过程。与上一节一样，我们将汇编代码的执行过程分成以下几个部分：
+
+- 初始化 `Cat` 结构体；
+- 完成从 `Cat` 到 `Duck` 接口的类型转换；
+- 调用接口的 `Quack` 方法；我们先来看一下上述汇编代码中用于初始化 `Cat` 结构体的部分：
+
+```
+XORPS   X0, X0                          ;; X0 = 0
+MOVUPS  X0, ""..autotmp_1+32(SP)        ;; StringHeader(SP+32).Data = 0
+LEAQ    go.string."grooming"(SB), AX    ;; AX = &"grooming"
+MOVQ    AX, ""..autotmp_1+32(SP)        ;; StringHeader(SP+32).Data = AX
+MOVQ    $8, ""..autotmp_1+40(SP)        ;; StringHeader(SP+32).Len =8
+```
+
+这段汇编指令会在栈上初始化 `Cat` 结构体，而上一节的代码在堆上申请了 16 字节的内存空间，栈上只有一个指向 `Cat` 的指针。
+
+初始化结构体后就进入类型转换的阶段，编译器会将 `go.itab."".Cat,"".Duck` 的地址和指向 `Cat` 结构体的指针作为参数一并传入 [`runtime.convT2I`](https://github.com/golang/go/blob/0c5d545ccdd01403d6ce865fb03774a6aff6032c/src/runtime/iface.go#L398-L411) 函数：
+
+```
+LEAQ    go.itab."".Cat,"".Duck(SB), AX     ;; AX = &(go.itab."".Cat,"".Duck)
+MOVQ    AX, (SP)                           ;; SP = AX
+LEAQ    ""..autotmp_1+32(SP), AX           ;; AX = &(SP+32) = &Cat{Name: "grooming"}
+MOVQ    AX, 8(SP)                          ;; SP + 8 = AX
+CALL    runtime.convT2I(SB)                ;; runtime.convT2I(SP, SP+8)
+```
+
+这个函数会获取 `itab` 中存储的类型，根据类型的大小申请一片内存空间并将 `elem` 指针中的内容拷贝到目标的内存空间中：
+
+```
+func convT2I(tab *itab, elem unsafe.Pointer) (i iface) {
+    t := tab._type
+    x := mallocgc(t.size, t, true)
+    typedmemmove(t, x, elem)
+    i.tab = tab
+    i.data = x
+    return
+}
+```
+
+[`runtime.convT2I`](https://github.com/golang/go/blob/0c5d545ccdd01403d6ce865fb03774a6aff6032c/src/runtime/iface.go#L398-L411) 会返回一个 `iface` 结构体，其中包含 `itab` 指针和 `Cat` 变量。当前函数返回之后，`main` 函数的栈上会包含以下数据：
+
+![golang-struct-to-iface](go语言设计与实现.assets/6278fa1f42d924af680c7ed03d7ce1e4.png)
+
+**图 4-12 结构体到指针**
+
+SP 和 SP+8 中存储的 `itab` 和 `Cat` 指针就是 [`runtime.convT2I`](https://github.com/golang/go/blob/0c5d545ccdd01403d6ce865fb03774a6aff6032c/src/runtime/iface.go#L398-L411) 函数的入参，这个函数的返回值位于 SP+16，是一个占 16 字节内存空间的 `iface` 结构体，SP+32 存储的就是在栈上的 `Cat` 结构体，它会在 [`runtime.convT2I`](https://github.com/golang/go/blob/0c5d545ccdd01403d6ce865fb03774a6aff6032c/src/runtime/iface.go#L398-L411) 执行的过程中拷贝到堆上。
+
+在最后，我们会通过以下的指令调用 `Cat` 实现的接口方法 `Quack()`：
+
+```
+MOVQ    16(SP), AX ;; AX = &(go.itab."".Cat,"".Duck)
+MOVQ    24(SP), CX ;; CX = &Cat{Name: "grooming"}
+MOVQ    24(AX), AX ;; AX = AX.fun[0] = Cat.Quack
+MOVQ    CX, (SP)   ;; SP = CX
+CALL    AX         ;; CX.Quack()
+```
+
+这几个汇编指令还是非常好理解的，`MOVQ 24(AX), AX` 是最关键的指令，它从 `itab` 结构体中取出 `Cat.Quack` 方法指针作为 `CALL` 指令调用时的参数。接口变量的第 24 字节是 `itab.fun` 数组开始的位置，由于 `Duck` 接口只包含一个方法，所以 `itab.fun[0]` 中存储的就是指向 `Quack` 方法的指针了。
+
+
+
+### 4.2.4 类型断言
+
+上一节介绍是如何把具体类型转换成接口类型，而这一节介绍的是如何将一个接口类型转换成具体类型。本节会根据接口中是否存在方法分两种情况介绍类型断言的执行过程。
+
+#### 非空接口
+
+首先分析接口中包含方法的情况，`Duck` 接口一个非空的接口，我们来分析从 `Duck` 转换回 `Cat` 结构体的过程：
+
+```
+func main() {
+    var c Duck = &Cat{Name: "grooming"}
+    switch c.(type) {
+    case *Cat:
+        cat := c.(*Cat)
+        cat.Quack()
+    }
+}
+```
+
+我们将编译得到的汇编指令分成两部分分析，第一部分是变量的初始化，第二部分是类型短信，第一部分的代码如下：
+
+```
+00000 TEXT    "".main(SB), ABIInternal, $32-0
+...
+00029 XORPS    X0, X0
+00032 MOVUPS    X0, ""..autotmp_4+8(SP)
+00037 LEAQ    go.string."grooming"(SB), AX
+00044 MOVQ    AX, ""..autotmp_4+8(SP)
+00049 MOVQ    $8, ""..autotmp_4+16(SP)
+```
+
+0037 ~ 0049 三个指令初始化了 `Duck` 变量，`Cat` 结构体初始化在 SP+8 ~ SP+24 上。因为 Go 语言的编译器做了一些优化，所以代码中没有`iface` 的构建过程，不过对于这一节要介绍的类型断言和转换没有太多的影响。下面进入类型转换的部分：
+
+```
+00058 CMPL  go.itab.*"".Cat,"".Duck+16(SB), $593696792  
+                                        ;; if (c.tab.hash != 593696792) {
+00068 JEQ   80                          ;;      
+00070 MOVQ  24(SP), BP                  ;;      BP = SP+24
+00075 ADDQ  $32, SP                     ;;      SP += 32
+00079 RET                               ;;      return
+                                        ;; } else {
+00080 LEAQ  ""..autotmp_4+8(SP), AX     ;;      AX = &Cat{Name: "grooming"}
+00085 MOVQ  AX, (SP)                    ;;      SP = AX
+00089 CALL  "".(*Cat).Quack(SB)         ;;      SP.Quack()
+00094 JMP   70                          ;;      ...
+                                        ;;      BP = SP+24
+                                        ;;      SP += 32
+                                        ;;      return
+                                        ;; }
+```
+
+switch语句生成的汇编指令会将目标类型的 `hash` 与接口变量中的 `itab.hash` 进行比较：
+
+- 如果两者相等意味着变量的具体类型是Cat，我们会跳转到 0080 所在的分支完成类型转换。
+  - 获取 SP+8 存储的 `Cat` 结构体指针；
+  - 将结构体指针拷贝到栈顶；
+  - 调用 `Quack` 方法；
+  - 恢复函数的栈并返回；
+- 如果接口中存在的具体类型不是 `Cat`，就会直接恢复栈指针并返回到调用方；
+
+![golang-interface-to-struct](go语言设计与实现.assets/632c104da26faabce818002fa32e905f.png)
+
+**图 4-13 接口转换成结构体**
+
+上图展示了调用 `Quack` 方法时的堆栈情况，其中 `Cat` 结构体存储在 SP+8 ~ SP+24 上，`Cat` 指针存储在栈顶并指向上述结构体。
+
+#### 空接口
+
+当我们使用空接口类型 `interface{}` 进行类型断言时，如果不关闭 Go 语言编译器的优化选项，生成的汇编指令是差不多的。编译器会省略将 `Cat` 结构体转换成 `eface` 的过程：
+
+```go
+func main() {
+    var c interface{} = &Cat{Name: "grooming"}
+    switch c.(type) {
+    case *Cat:
+        cat := c.(*Cat)
+        cat.Quack()
+    }
+}
+```
+
+如果禁用编译器优化，上述代码会在类型断言时就不是直接获取变量中具体类型的 `_type`，而是从 `eface._type` 中获取，汇编指令仍然会使用目标类型的 `hash` 字段与变量的类型比较。
+
+
+
+### 4.2.5 动态派发
+
+动态派发（Dynamic dispatch）是在运行期间选择具体多态操作（方法或者函数）执行的过程，它是一种在面向对象语言中常见的特性[6](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fn:6)。
+
+Go 语言虽然不是严格意义上的面向对象语言，但是接口的引入为它带来了动态派发这一特性，调用接口类型的方法时，如果编译期间不能确认接口的类型，Go 语言会在运行期间决定具体调用该方法的哪个实现。
+
+在如下所示的代码中，`main` 函数调用了两次 `Quack` 方法：
+
+- 第一次以 `Duck` 接口类型的身份调用，调用时需要经过运行时的动态派发；
+- 第二次以 `*Cat` 具体类型的身份调用，编译期就会确定调用的函数：
+
+```go
+func main() {
+    var c Duck = &Cat{Name: "grooming"}
+    c.Quack()
+    c.(*Cat).Quack()
+}
+```
+
+因为编译器优化影响了我们对原始汇编指令的理解，所以需要使用编译参数 `-N` 关闭编译器优化。如果不指定这个参数，编译器会对代码进行重写，与最初生成的执行过程有一些偏差，例如：
+
+- 因为接口类型中的 `tab` 参数并没有被使用，所以优化从 `Cat` 转换到 `Duck` 的过程；
+- 因为变量的具体类型是确定的，所以删除从 `Duck` 接口类型转换到 `*Cat` 具体类型时可能会发生 `panic` 的分支；
+- …
+
+在具体分析调用 `Quack` 方法的两种姿势之前，我们要先了解 `Cat` 结构体究竟是如何初始化的，以及初始化完成后的栈上有哪些数据：
+
+```
+LEAQ    type."".Cat(SB), AX                
+MOVQ    AX, (SP)
+CALL    runtime.newobject(SB)              ;; SP + 8 = new(Cat)
+MOVQ    8(SP), DI                          ;; DI = SP + 8
+MOVQ    DI, ""..autotmp_2+32(SP)           ;; SP + 32 = DI
+MOVQ    $8, 8(DI)                          ;; StringHeader(cat).Len = 8
+LEAQ    go.string."grooming"(SB), AX       ;; AX = &"grooming"
+MOVQ    AX, (DI)                           ;; StringHeader(cat).Data = AX
+MOVQ    ""..autotmp_2+32(SP), AX           ;; AX = &Cat{...}
+MOVQ    AX, ""..autotmp_1+40(SP)           ;; SP + 40 = &Cat{...}
+LEAQ    go.itab.*"".Cat,"".Duck(SB), CX    ;; CX = &go.itab.*"".Cat,"".Duck
+MOVQ    CX, "".c+48(SP)                    ;; iface(c).tab = SP + 48 = CX
+MOVQ    AX, "".c+56(SP)                    ;; iface(c).data = SP + 56 = AX
+```
+
+这段代码的初始化过程其实和上两节中的过程没有太多的差别，它先初始化了 `Cat` 结构体指针，再将 `Cat` 和 `tab` 打包成了一个 `iface` 类型的结构体，我们直接来看初始化结束后的栈情况：
+
+![stack-after-initialize](go语言设计与实现.assets/dc6d51f3cdcc2ad94464e7f882f75864.png)
+
+**图 4-14 接口类型初始化后的栈**
+
+- SP 是 `Cat` 类型，它也是运行时 [`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 方法的参数；
+- SP+8 是 [`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 方法的返回值，也就是指向堆上的 `Cat` 结构体的指针；
+- SP+32、SP+40 是对 SP+8 的拷贝，这两个指针都会指向栈上的 `Cat` 结构体；
+- SP+48 ~ SP+64 是接口变量 `iface` 结构体，其中包含了 `tab` 结构体指针和 `*Cat` 指针；
+
+初始化过程结束之后，我们进入到了动态派发的过程，`c.Quack()` 语句展开的汇编指令会在运行时确定函数指针。
+
+```
+MOVQ    "".c+48(SP), AX                    ;; AX = iface(c).tab
+MOVQ    24(AX), AX                         ;; AX = iface(c).tab.fun[0] = Cat.Quack
+MOVQ    "".c+56(SP), CX                    ;; CX = iface(c).data
+MOVQ    CX, (SP)                           ;; SP = CX = &Cat{...}
+CALL    AX                                 ;; SP.Quack()
+```
+
+
+
+这段代码的执行过程可以分成以下三个步骤：
+
+- 从接口变量中获取了保存 `Cat.Quack` 方法指针的 `tab.func[0]`；
+- 接口变量在中的数据会被拷贝到栈顶；
+- 方法指针会被拷贝到寄存器中并通过汇编指令 `CALL` 触发：另一个调用 `Quack` 方法的语句 `c.(*Cat).Quack()*` *生成的汇编指令看起来会有一些复杂，但是代码前半部分都是在做类型转换，将接口类型转换成 ``*`Cat` 类型，只有最后两行代码才是函数调用相关的指令：
+
+```
+MOVQ    "".c+56(SP), AX                    ;; AX = iface(c).data = &Cat{...}
+MOVQ    "".c+48(SP), CX                    ;; CX = iface(c).tab
+LEAQ    go.itab.*"".Cat,"".Duck(SB), DX    ;; DX = &&go.itab.*"".Cat,"".Duck
+CMPQ    CX, DX                             ;; CMP(CX, DX)
+JEQ    163
+JMP    201
+MOVQ    AX, ""..autotmp_3+24(SP)           ;; SP+24 = &Cat{...}
+MOVQ    AX, (SP)                           ;; SP = &Cat{...}
+CALL    "".(*Cat).Quack(SB)                ;; SP.Quack()
+```
+
+下面的几行代码只是将 `Cat` 指针拷贝到了栈顶并调用 `Quack` 方法。这一次调用的函数指针在编译期就已经确定了，所以运行时就不需要动态查找方法的实现：
+
+```
+MOVQ    "".c+48(SP), AX                    ;; AX = iface(c).tab
+MOVQ    24(AX), AX                         ;; AX = iface(c).tab.fun[0] = Cat.Quack
+MOVQ    "".c+56(SP), CX                    ;; CX = iface(c).data
+```
+
+#### 基准测试
+
+下面代码中的两个方法 `BenchmarkDirectCall` 和 `BenchmarkDynamicDispatch` 分别会调用结构体方法和接口方法，在接口上调用方法时会使用动态派发机制，我们以直接调用作为基准分析动态派发带来了多少额外开销：
+
+```go
+func BenchmarkDirectCall(b *testing.B) {
+    c := &Cat{Name: "grooming"}
+    for n := 0; n < b.N; n++ {
+        // MOVQ    AX, "".c+24(SP)
+        // MOVQ    AX, (SP)
+        // CALL    "".(*Cat).Quack(SB)
+        c.Quack()
+    }
+}
+func BenchmarkDynamicDispatch(b *testing.B) {
+    c := Duck(&Cat{Name: "grooming"})
+    for n := 0; n < b.N; n++ {
+        // MOVQ    "".d+56(SP), AX
+        // MOVQ    24(AX), AX
+        // MOVQ    "".d+64(SP), CX
+        // MOVQ    CX, (SP)
+        // CALL    AX
+        c.Quack()
+    }
+}
+```
+
+我们直接运行下面的命令，使用 1 个 CPU 运行上述代码，每一个基准测试都会被执行 3 次：
+
+```
+$ go test -gcflags=-N -benchmem -test.count=3 -test.cpu=1 -test.benchtime=1s -bench=.
+goos: darwin
+goarch: amd64
+pkg: github.com/golang/playground
+BenchmarkDirectCall          500000000             3.11 ns/op           0 B/op           0 allocs/op
+BenchmarkDirectCall          500000000             2.94 ns/op           0 B/op           0 allocs/op
+BenchmarkDirectCall          500000000             3.04 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     500000000             3.40 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     500000000             3.79 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     500000000             3.55 ns/op           0 B/op           0 allocs/op
+```
+
+- 调用结构体方法时，每一次调用需要 `~3.03ns`；
+- 使用动态派发时，每一调用需要 `~3.58ns`；
+
+在关闭编译器优化的情况下，从上面的数据来看，动态派发生成的指令会带来 `~18%` 左右的额外性能开销。
+
+这些性能开销在一个复杂的系统中不会带来太多的影响。一个项目不可能只使用动态派发，而且如果我们开启编译器优化后，动态派发的额外开销会降低至 `~5%`，这对应用性能的整体影响就更小了，所以与使用接口带来的好处相比，动态派发的额外开销往往可以忽略。
+
+上面的性能测试建立在实现和调用方法的都是结构体指针上，当我们将结构体指针换成结构体又会有比较大的差异：
+
+```go
+func BenchmarkDirectCall(b *testing.B) {
+    c := Cat{Name: "grooming"}
+    for n := 0; n < b.N; n++ {
+        // MOVQ    AX, (SP)
+        // MOVQ    $8, 8(SP)
+        // CALL    "".Cat.Quack(SB)
+        c.Quack()
+    }
+}
+func BenchmarkDynamicDispatch(b *testing.B) {
+    c := Duck(Cat{Name: "grooming"})
+    for n := 0; n < b.N; n++ {
+        // MOVQ    16(SP), AX
+        // MOVQ    24(SP), CX
+        // MOVQ    AX, "".d+32(SP)
+        // MOVQ    CX, "".d+40(SP)
+        // MOVQ    "".d+32(SP), AX
+        // MOVQ    24(AX), AX
+        // MOVQ    "".d+40(SP), CX
+        // MOVQ    CX, (SP)
+        // CALL    AX
+        c.Quack()
+    }
+}
+```
+
+我们重新执行相同的基准测试时，会得到如下所示的结果：
+
+```
+$ go test -gcflags=-N -benchmem -test.count=3 -test.cpu=1 -test.benchtime=1s .
+goos: darwin
+goarch: amd64
+pkg: github.com/golang/playground
+BenchmarkDirectCall          500000000             3.15 ns/op           0 B/op           0 allocs/op
+BenchmarkDirectCall          500000000             3.02 ns/op           0 B/op           0 allocs/op
+BenchmarkDirectCall          500000000             3.09 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     200000000             6.92 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     200000000             6.91 ns/op           0 B/op           0 allocs/op
+BenchmarkDynamicDispatch     200000000             7.10 ns/op           0 B/op           0 allocs/op
+```
+
+直接调用方法需要消耗时间的平均值和使用指针实现接口时差不多，约为 `~3.09ns`，而使用动态派发调用方法却需要 `~6.98ns` 相比直接调用额外消耗了 `~125%` 的时间，从生成的汇编指令我们也能看出后者的额外开销会高很多。
+
+|        | 直接调用 | 动态派发 |
+| :----- | :------- | :------- |
+| 指针   | ~3.03ns  | ~3.58ns  |
+| 结构体 | ~3.09ns  | ~6.98ns  |
+
+从上述表格我们可以看到使用结构体来实现接口带来的开销会大于使用指针实现，而动态派发在结构体上的表现非常差，这也提醒我们应当尽量避免使用结构体类型实现接口。
+
+使用结构体带来的巨大性能差异不只是接口带来的问题，带来性能问题主要因为 Go 语言在函数调用时是传值的，动态派发的过程只是放大了参数拷贝带来的影响。
+
+
+
+### 4.2.6 小结
+
+重新回顾一下本节介绍的内容，我们在开头简单介绍了使用 Go 语言接口的常见问题，例如使用不同类型实现接口带来的差异、函数调用时发生的隐式类型转换；我们还分析了接口的类型转换、类型断言以及动态派发机制。相信这一节中内容能够帮助各位读者深入理解 Go 语言的接口。
+
+------
+
+- Wikepedia: Interface (computing) [https://en.wikipedia.org/wiki/Interface_(computing)](https://en.wikipedia.org/wiki/Interface_(computing))[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:1)
+- Wikipedia: POSIX https://en.wikipedia.org/wiki/POSIX[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:2)
+- 计算机程序的构造和解释，Harold Abelson / Gerald Jay Sussman / Julie Sussman https://book.douban.com/subject/1148282/[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:3)
+- cmd/compile,runtime: generate hash functions only for types which are map keys https://github.com/golang/go/commit/36f30ba289e31df033d100b2adb4eaf557f05a34[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:4)
+- Go’s hidden #pragmas https://dave.cheney.net/2018/01/08/gos-hidden-pragmas[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:5)
+- Wikipedia: Dynamic Dispatch https://en.wikipedia.org/wiki/Dynamic_dispatch[↩︎](https://www.bookstack.cn/read/draveness-golang/5833e4cb4df6241b.md#fnref:6)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 - [4.3 反射](https://www.bookstack.cn/read/draveness-golang/f42669fa0cd10c64.md)
 - [4.4 推荐阅读](https://www.bookstack.cn/read/draveness-golang/82497e663992a6f7.md)
 
