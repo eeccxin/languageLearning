@@ -4620,37 +4620,550 @@ Go 语言的 [`reflect`](https://golang.org/pkg/reflect/) 包为我们提供的�
 
 
 
+## 4.5 推荐阅读
+
+> [4.4 推荐阅读](https://www.bookstack.cn/read/draveness-golang/82497e663992a6f7.md)
+
+- [The Function Stack](https://www.tenouk.com/Bufferoverflowc/Bufferoverflow2a.html)
+- [Why do byte spills occur and what do they achieve?](https://stackoverflow.com/questions/16453314/why-do-byte-spills-occur-and-what-do-they-achieve)
+- [Friday Q&A 2011-12-16: Disassembling the Assembly, Part 1](https://mikeash.com/pyblog/friday-qa-2011-12-16-disassembling-the-assembly-part-1.html)
+- [x86 calling conventions](https://en.wikipedia.org/wiki/X86_calling_conventions)
+- [Call Stack](https://en.wikipedia.org/wiki/Call_stack)
+- [Chapter I: A Primer on Go Assembly](https://github.com/teh-cmc/go-internals/blob/master/chapter1_assembly_primer/README.md)
+- [How Interfaces Work in Go](https://www.tapirgames.com/blog/golang-interface-implementation)
+- [Interfaces and other types · Effective Go](https://golang.org/doc/effective_go.html#interfaces_and_types)
+- [How to use interfaces in Go](https://jordanorelli.com/post/32665860244/how-to-use-interfaces-in-go)
+- [Go Data Structures: Interfaces](https://research.swtch.com/interfaces)
+- [Duck typing · Wikipedia](https://en.wikipedia.org/wiki/Duck_typing)
+- [What is POSIX?](http://www.robelle.com/smugbook/posix.html)
+- [Chapter II: Interfaces](https://github.com/teh-cmc/go-internals/blob/master/chapter2_interfaces/README.md)
+- [The Laws of Reflection](https://blog.golang.org/laws-of-reflection)
+- [runtime: new itab lookup table](https://github.com/golang/go/commit/3d1699ea787f38be6088f9a098d6e08dafca9387)
+- [runtime: need a better itab table](https://github.com/golang/go/issues/20505)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-- [4.4 推荐阅读](https://www.bookstack.cn/read/draveness-golang/82497e663992a6f7.md)
 
 
 
 # 第五章 常用关键字
 
-- [5.1 for 和 range](https://www.bookstack.cn/read/draveness-golang/816b8b0f4e15285f.md)
+## 5.1 for 和 range
+
+> [5.1 for 和 range](https://www.bookstack.cn/read/draveness-golang/816b8b0f4e15285f.md)
+
+循环是所有编程语言都有的控制结构，除了使用经典的『三段式』循环之外，Go 语言还引入了另一个关键字 range 帮助我们快速遍历[数组](https://www.bookstack.cn/read/draveness-golang/79255565262cc9f6.md)、[切片](https://www.bookstack.cn/read/draveness-golang/bc59e924b285e5e9.md)、[哈希表](https://www.bookstack.cn/read/draveness-golang/8a6fa5746b8fbe7e.md) 以及 [Channel](https://www.bookstack.cn/read/draveness-golang/c666731d5f1a2820.md) 等集合类型。本节将深入分析 Go 语言的两种不同循环，也就是经典的 for 循环和 for/range 循环，我们会分析这两种循环的运行时结构以及它们的实现原理，
+
+for 循环能够将代码中的数据和逻辑分离，让同一份代码能够多次复用处理同样的逻辑。我们先来看一下 Go 语言 for 循环对应的汇编代码，下面是一段经典的三段式循环的代码，我们将它编译成汇编指令：
+
+```go
+package main
+func main() {
+    for i := 0; i < 10; i++ {
+        println(i)
+    }
+}
+"".main STEXT size=98 args=0x0 locals=0x18
+    00000 (main.go:3)    TEXT    "".main(SB), $24-0
+    ...
+    00029 (main.go:3)    XORL    AX, AX                   ;; i := 0
+    00031 (main.go:4)    JMP    75
+    00033 (main.go:4)    MOVQ    AX, "".i+8(SP)
+    00038 (main.go:5)    CALL    runtime.printlock(SB)
+    00043 (main.go:5)    MOVQ    "".i+8(SP), AX
+    00048 (main.go:5)    MOVQ    AX, (SP)
+    00052 (main.go:5)    CALL    runtime.printint(SB)
+    00057 (main.go:5)    CALL    runtime.printnl(SB)
+    00062 (main.go:5)    CALL    runtime.printunlock(SB)
+    00067 (main.go:4)    MOVQ    "".i+8(SP), AX
+    00072 (main.go:4)    INCQ    AX                       ;; i++
+    00075 (main.go:4)    CMPQ    AX, $10                  ;; 比较变量 i 和 10
+    00079 (main.go:4)    JLT    33                           ;; 跳转到 33 行如果 i < 10
+    ...
+```
+
+我们将上述汇编指令的执行过程分成三个部分进行分析：
+
+- 0029 ~ 0031 行负责循环的初始化；
+  - 对寄存器 `AX` 中的变量 `i` 进行初始化并执行 `JMP 75` 指令跳转到 0075 行；
+- 0075 ~ 0079 行负责检查循环的终止条件，将寄存器中存储的数据 i与 10 比较；
+  - `JLT 33` 命令会在变量的值小于 10 时跳转到 0033 行执行循环主体；
+  - `JLT 33` 命令会在变量的值大于 10 时跳出循环体执行下面的代码；
+- 0033 ~ 0072 行是循环内部的语句；
+  - 通过多个汇编指令打印变量中的内容；
+  - `INCQ AX` 指令会将变量加一，然后再与 10 进行比较，回到第二步；for/range 循环经过优化的汇编代码有着完全相同的结构。无论是变量的初始化、循环体的执行还是最后的条件判断都是完全一样的，所以这里也就不展开分析对应的汇编指令了。
+
+```go
+package main
+func main() {
+    arr := []int{1, 2, 3}
+    for i, _ := range arr {
+        println(i)
+    }
+}
+```
+
+在汇编语言中，无论是经典的 for 循环还是 for/range 循环都会使用 **`JMP`** 以及相关的命令跳回循环体的开始位置来多次执行代码的逻辑。从不同循环具有相同的汇编代码可以猜到，使用 for/range 的控制结构最终也会被 Go 语言编译器转换成普通的 for 循环，后面的分析会印证这一点。
+
+
+
+### 5.1.1 现象
+
+在深入语言的源代码中了解两种不同循环的实现之前，我们可以先来看一下使用 `for` 和 `range` 会遇到的一些现象和问题，我们可以带着这些现象和问题去源代码中寻找答案，这样能更高效地理解实现。
+
+#### 循环永动机
+
+如果我们在遍历数组的同时修改数组的元素，能否得到一个永远都不会停止的循环呢？你可以自己尝试运行下面的代码来得到结果：
+
+```go
+func main() {
+    arr := []int{1, 2, 3}
+    for _, v := range arr {
+        arr = append(arr, v)
+    }
+    fmt.Println(arr)
+}
+$ go run main.go
+1 2 3 1 2 3
+```
+
+
+
+上述代码的输出意味着循环只遍历了原始切片中的三个元素，我们在遍历切片时追加的元素不会增加循环的执行次数，所以循环最终还是停了下来。
+
+#### 神奇的指针
+
+第二个例子是使用 Go 语言经常会犯的错误[1](https://www.bookstack.cn/read/draveness-golang/816b8b0f4e15285f.md#fn:1)。当我们在遍历一个数组时，如果获取 `range` 返回变量的地址并保存到另一个数组或者哈希时，就会遇到令人困惑的现象：
+
+```go
+func main() {
+    arr := []int{1, 2, 3}
+    newArr := []*int{}
+    for _, v := range arr {
+        newArr = append(newArr, &v)
+    }
+    for _, v := range newArr {
+        fmt.Println(*v)
+    }
+}
+$ go run main.go
+3 3 3
+```
+
+上述代码最终会输出三个连续的 `3`，这个问题比较常见，一些有经验的开发者不经意也会犯这种错误，正确的做法应该是使用 `&arr[i]` 替代 `&v`，我们会在下面分析这一现象背后的原因。（因为newArr是一个地址数组，而遍历是v的地址是不变的，所以最后其实存的是同个地址，且最后地址上的值是3）
+
+
+
+#### 遍历清空数组
+
+当我们想要在 Go 语言中清空一个切片或者哈希表时，我们一般都会使用以下的方法将切片中的元素置零，但是依次去遍历切片和哈希表看起来是非常耗费性能的事情：
+
+```go
+func main() {
+    arr := []int{1, 2, 3}
+    for i, _ := range arr {
+        arr[i] = 0
+    }
+}
+```
+
+因为数组、切片和哈希表占用的内存空间都是连续的，所以最快的方法是直接清空这片内存中的内容，当我们编译上述代码时会得到以下的汇编指令：
+
+```
+"".main STEXT size=93 args=0x0 locals=0x30
+    0x0000 00000 (main.go:3)    TEXT    "".main(SB), $48-0
+    ...
+    0x001d 00029 (main.go:4)    MOVQ    "".statictmp_0(SB), AX
+    0x0024 00036 (main.go:4)    MOVQ    AX, ""..autotmp_3+16(SP)
+    0x0029 00041 (main.go:4)    MOVUPS    "".statictmp_0+8(SB), X0
+    0x0030 00048 (main.go:4)    MOVUPS    X0, ""..autotmp_3+24(SP)
+    0x0035 00053 (main.go:5)    PCDATA    $2, $1
+    0x0035 00053 (main.go:5)    LEAQ    ""..autotmp_3+16(SP), AX
+    0x003a 00058 (main.go:5)    PCDATA    $2, $0
+    0x003a 00058 (main.go:5)    MOVQ    AX, (SP)
+    0x003e 00062 (main.go:5)    MOVQ    $24, 8(SP)
+    0x0047 00071 (main.go:5)    CALL    runtime.memclrNoHeapPointers(SB)
+    ...
+```
+
+从生成的汇编代码我们可以看出，编译器会直接使用 [`runtime.memclrNoHeapPointers`](https://github.com/golang/go/blob/05c02444eb2d8b8d3ecd949c4308d8e2323ae087/src/runtime/memclr_386.s#L12-L16) 清空切片中的数据，这也是我们在下面的小节会介绍的内容。
+
+
+
+#### 随机遍历
+
+当我们在 Go 语言中使用 `range` 遍历哈希表时，往往都会使用如下的代码结构，但是这段代码在每次运行时都会打印出不同的结果：
+
+```go
+func main() {
+    hash := map[string]int{
+        "1": 1,
+        "2": 2,
+        "3": 3,
+    }
+    for k, v := range hash {
+        println(k, v)
+    }
+}
+```
+
+两次运行上述代码可能会得到不同的结果，第一次会打印 `2 3 1`，第二次会打印 `1 2 3`，如果我们运行的次数足够多，最后会得到几种不同的遍历顺序。
+
+这是 Go 语言故意的设计，它在运行时为哈希表的遍历引入不确定性，也是告诉所有使用 Go 语言的使用者，程序不要依赖于哈希表的稳定遍历，我们在下面的小节会介绍在**遍历的过程是如何引入不确定性的**。
+
+
+
+
+
+### 5.1.2 经典循环
+
+Go 语言中的经典循环在编译器看来是一个 `OFOR` 类型的节点，这个节点由以下四个部分组成：
+
+- 初始化循环的 `Ninit`；
+- 循环的中止条件 `Left`；
+- 循环体结束时执行的 `Right`；
+- 循环体 `NBody`：
+
+```
+for Ninit; Left; Right {
+    NBody
+}
+```
+
+在生成 SSA 中间代码的阶段，[`cmd/compile/internal/gc.stmt`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L1023-L1502) 方法在发现传入的节点类型是 `OFOR` 时就会执行以下的代码块，这段代码的会将循环中的代码分成不同的块：
+
+```go
+func (s *state) stmt(n *Node) {
+    switch n.Op {
+    case OFOR, OFORUNTIL:
+        bCond, bBody, bIncr, bEnd := ...
+        b := s.endBlock()
+        b.AddEdgeTo(bCond)
+        s.startBlock(bCond)
+        s.condBranch(n.Left, bBody, bEnd, 1)
+        s.startBlock(bBody)
+        s.stmtList(n.Nbody)
+        b.AddEdgeTo(bIncr)
+        s.startBlock(bIncr)
+        s.stmt(n.Right)
+        b.AddEdgeTo(bCond)
+        s.startBlock(bEnd)
+    }
+}
+```
+
+
+
+一个常见的 for 循环代码会被 [`cmd/compile/internal/gc.stmt`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L1023-L1502) 方法转换成下面的控制结构，该结构中包含了 4 个不同的块，这些代码块之间的连接就表示汇编语言中的跳转关系，与我们理解的 for 循环控制结构其实没有太多的差别。
+
+![golang-for-loop-ssa](go语言设计与实现.assets/f7368d90712554bf0b4fc7cdf6420a03.png)
+
+**图 5-1 Go 语言循环生成的 SSA 代码**
+
+[机器码生成](https://www.bookstack.cn/read/draveness-golang/100aabc3275d17e5.md)阶段会将这些代码块转换成机器码，以及指定 CPU 架构上运行的机器语言，就是我们在前面编译得到的汇编指令。
+
+
+
+### 5.1.3 范围循环
+
+与简单的经典循环相比，范围循环在 Go 语言中更常见、实现也更复杂。这种循环同时使用 for 和 range 两个关键字，编译器会在编译期间将所有 for/range 循环变成的经典循环。从编译器的视角来看，就是将 `ORANGE` 类型的节点转换成 `OFOR` 节点:
+
+![Golang-For-Range-Loop](go语言设计与实现.assets/16b73509b943c14f0114f0c6cd7e661f.png)
+
+**图 5-2 范围循环、普通循环和 SSA**
+
+节点类型的转换过程都发生在 SSA 中间代码生成阶段，所有的 for/range 循环都会被 [`cmd/compile/internal/gc.walkrange`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/cmd/compile/internal/gc/range.go#L155-L456) 函数转换成不包含复杂结构、只包含基本表达式的语句。接下来，我们按照循环遍历的元素类型依次介绍遍历数组和切片、哈希表、字符串以及管道时的过程。
+
+#### 数组和切片
+
+对于数组和切片来说，Go 语言有三种不同的遍历方式，这三种不同的遍历方式分别对应着代码中的不同条件，它们会在 [`cmd/compile/internal/gc.walkrange`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/cmd/compile/internal/gc/range.go#L155-L456) 函数中转换成不同的控制逻辑，我们将该函数的相关逻辑分成几个部分进行分析：
+
+- 分析遍历数组和切片清空元素的情况；
+- 分析使用 `for range a {}` 遍历数组和切片，不关心索引和数据的情况；
+- 分析使用 `for i := range a {}` 遍历数组和切片，只关心索引的情况；
+- 分析使用 `for i, elem := range a {}` 遍历数组和切片，关心索引和数据的情况；
+
+```go
+func walkrange(n *Node) *Node {
+    switch t.Etype {
+    case TARRAY, TSLICE:
+        if arrayClear(n, v1, v2, a) {
+            return n
+        }
+```
+
+[`cmd/compile/internal/gc.arrayClear`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/cmd/compile/internal/gc/range.go#L532-L610) 是一个非常有趣的优化，这个函数会优化 Go 语言遍历数组或者切片并删除全部元素的逻辑：
+
+```
+// original
+for i := range a {
+    a[i] = zero
+}
+// optimized
+if len(a) != 0 {
+    hp = &a[0]
+    hn = len(a)*sizeof(elem(a))
+    memclrNoHeapPointers(hp, hn)
+    i = len(a) - 1
+}
+```
+
+相比于依次清除数组或者切片中的数据，Go 语言会直接使用 [`runtime.memclrNoHeapPointers`](https://github.com/golang/go/blob/05c02444eb2d8b8d3ecd949c4308d8e2323ae087/src/runtime/memclr_386.s#L12-L16) 或者 [`runtime.memclrHasPointers`](https://github.com/golang/go/blob/db16de920370892b0241d3fa0617dddff2417a4d/src/runtime/mbarrier.go#L345-L348) 函数直接清除目标数组对应内存空间中的数据，并在执行完成后更新用于遍历数组的索引，这也印证了我们在遍历清空数组一节中观察到的现象。
+
+处理了这种特殊的情况之后，我们就可以继续回到 `ORANGE` 节点的处理过程了。这里会设置 for 循环的 `Left` 和 `Right` 字段，也就是终止条件和循环体每次执行结束后运行的代码：
+
+```
+ha := a
+hv1 := temp(types.Types[TINT])
+hn := temp(types.Types[TINT])
+init = append(init, nod(OAS, hv1, nil))
+init = append(init, nod(OAS, hn, nod(OLEN, ha, nil)))
+n.Left = nod(OLT, hv1, hn)
+n.Right = nod(OAS, hv1, nod(OADD, hv1, nodintconst(1)))
+if v1 == nil {
+break
+}
+```
+
+如果原始的循环是 `for range a {}`，那么就满足 `v1 == nil` 的条件，即循环不关心数组的索引和数据，它会被编译器转换成如下所示的代码：
+
+```
+ha := a
+hv1 := 0
+hn := len(ha)
+v1 := hv1
+for ; hv1 < hn; hv1++ {
+    ...
+}
+```
+
+这是 `ORANGE` 结构在编译期间被转换的最简单形式，由于原始代码不需要获取数组的索引和元素，只需要使用数组或者切片的数量执行对应次数的循环，所以会生成一个最简单的 for 循环。
+
+如果我们在遍历数组时需要使用索引 `for i := range a {}`，那么编译器会继续会执行下面的代码：
+
+```
+        if v2 == nil {
+            body = []*Node{nod(OAS, v1, hv1)}
+            break
+        }
+```
+
+`v2 == nil` 意味着调用方不关心数组的元素，只关心遍历数组使用的索引。它会将 `for i := range a {}` 转换成如下所示的逻辑，与第一种循环相比，这种循环在循环体中添加了 `v1 := hv1` 语句，传递遍历数组时的索引：
+
+```
+ha := a
+hv1 := 0
+hn := len(ha)
+v1 := hv1
+for ; hv1 < hn; hv1++ {
+    v1 := hv1
+    ...
+}
+```
+
+上面的两种情况虽然也是使用 range 经常遇到的情况，但是同时去遍历索引和元素也很常见。处理这种情况会使用下面这段的代码：
+
+```
+        tmp := nod(OINDEX, ha, hv1)
+        tmp.SetBounded(true)
+        a := nod(OAS2, nil, nil)
+        a.List.Set2(v1, v2)
+        a.Rlist.Set2(hv1, tmp)
+        body = []*Node{a}
+    }
+    n.Ninit.Append(init...)
+    n.Nbody.Prepend(body...)
+    return n
+}
+```
+
+这段代码处理的就是遍历数组和切片时，同时关心索引和切片的情况。它不仅会在循环体中插入更新索引的语句，还会插入赋值操作让循环体内部的代码能够访问数组中的元素：
+
+```
+ha := a
+hv1 := 0
+hn := len(ha)
+v1 := hv1
+for ; hv1 < hn; hv1++ {
+    tmp := ha[hv1]
+    v1, v2 := hv1, tmp
+    ...
+}
+```
+
+对于所有的 range 循环，Go 语言都会在编译期将原切片或者数组赋值给一个新的变量 `ha`，在赋值的过程中就发生了拷贝，所以我们遍历的切片已经不是原始的切片变量了。
+
+而遇到这种同时遍历索引和元素的 range 循环时，Go 语言会额外创建一个新的 `v2` 变量存储切片中的元素，**循环中使用的这个变量 v2 会在每一次迭代被重新赋值，在赋值时也发生了拷贝**。
+
+```
+func main() {
+    arr := []int{1, 2, 3}
+    newArr := []*int{}
+    for i, _ := range arr {
+        newArr = append(newArr, &arr[i])
+    }
+    for _, v := range newArr {
+        fmt.Println(*v)
+    }
+}
+```
+
+因为在循环中获取返回变量的地址都完全相同，所以会发生神奇的指针一节中的现象。所以如果我们想要访问数组中元素所在的地址，不应该直接获取 range 返回的变量地址 `&v2`，而应该使用 `&a[index]` 这种形式。
+
+
+
+#### 哈希表
+
+在遍历哈希表时，编译器会使用 [`runtime.mapiterinit`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L797-L844) 和 [`runtime.mapiternext`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L846-L970) 两个运行时函数重写原始的 for/range 循环：
+
+```
+ha := a
+hit := hiter(n.Type)
+th := hit.Type
+mapiterinit(typename(t), ha, &hit)
+for ; hit.key != nil; mapiternext(&hit) {
+    key := *hit.key
+    val := *hit.val
+}
+```
+
+上述代码是 `for key, val := range hash {}` 生成的，在 [`cmd/compile/internal/gc.walkrange`](https://github.com/golang/go/blob/440f7d64048cd94cba669e16fe92137ce6b84073/src/cmd/compile/internal/gc/range.go#L155-L456) 函数处理 `TMAP` 节点时会根据接受 range 返回值的数量在循环体中插入需要的赋值语句：
+
+![golang-range-map](go语言设计与实现.assets/dace09cf64b49e7bada876055a3a3578.png)
+
+**图 5-3 不同方式遍历哈希插入的语句**
+
+这三种不同的情况会分别向循环体插入不同的赋值语句。遍历哈希表时会使用 [`runtime.mapiterinit`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L797-L844) 函数初始化遍历开始的元素：
+
+```
+func mapiterinit(t *maptype, h *hmap, it *hiter) {
+    it.t = t
+    it.h = h
+    it.B = h.B
+    it.buckets = h.buckets
+    r := uintptr(fastrand())
+    it.startBucket = r & bucketMask(h.B)
+    it.offset = uint8(r >> h.B & (bucketCnt - 1))
+    it.bucket = it.startBucket
+    mapiternext(it)
+}
+```
+
+该函数会初始化 `hiter` 结构体中的字段，并通过 [`runtime.fastrand`](https://github.com/golang/go/blob/383b447e0da5bd1fcdc2439230b5a1d3e3402117/src/runtime/stubs.go#L99-L111) 生成一个随机数帮助我们随机选择一个桶开始遍历。Go 团队在设计哈希表的遍历时就不想让使用者依赖固定的遍历顺序，所以引入了随机数保证遍历的随机性。
+
+遍历哈希会使用 [`runtime.mapiternext`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L846-L970) 函数，我们在这里简化了很多逻辑，省去了一些边界条件以及哈希表扩容时的兼容操作，这里只需要关注处理遍历逻辑的核心代码，我们会将该函数分成桶的选择和桶内元素的遍历两部分进行分析，首先是桶的选择过程：
+
+```go
+func mapiternext(it *hiter) {
+    h := it.h
+    t := it.t
+    bucket := it.bucket
+    b := it.bptr
+    i := it.i
+    alg := t.key.alg
+next:
+    if b == nil {
+        if bucket == it.startBucket && it.wrapped {
+            it.key = nil
+            it.value = nil
+            return
+        }
+        b = (*bmap)(add(it.buckets, bucket*uintptr(t.bucketsize)))
+        bucket++
+        if bucket == bucketShift(it.B) {
+            bucket = 0
+            it.wrapped = true
+        }
+        i = 0
+    }
+```
+
+这段代码主要有两个作用：
+
+- 在待遍历的桶为空时选择需要遍历的新桶；
+- 在不存在待遍历的桶时返回 `(nil, nil)` 键值对并中止遍历过程；[`runtime.mapiternext`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L846-L970) 函数中第二段代码的主要作用就是从桶中找到下一个遍历的元素，在大多数情况下都会直接操作内存获取目标键值的内存地址，不过如果哈希表处于扩容期间就会调用 [`runtime.mapaccessK`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L511-L552) 函数获取键值对：
+
+```
+    for ; i < bucketCnt; i++ {
+        offi := (i + it.offset) & (bucketCnt - 1)
+        k := add(unsafe.Pointer(b), dataOffset+uintptr(offi)*uintptr(t.keysize))
+        v := add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+uintptr(offi)*uintptr(t.valuesize))
+        if (b.tophash[offi] != evacuatedX && b.tophash[offi] != evacuatedY) ||
+            !(t.reflexivekey() || alg.equal(k, k)) {
+            it.key = k
+            it.value = v
+        } else {
+            rk, rv := mapaccessK(t, h, k)
+            it.key = rk
+            it.value = rv
+        }
+        it.bucket = bucket
+        it.i = i + 1
+        return
+    }
+    b = b.overflow(t)
+    i = 0
+    goto next
+}
+```
+
+当上述函数已经遍历了正常桶，就会通过 [`runtime.bmap.overflow`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L207-L209) 获取溢出桶依次进行遍历。
+
+![golang-range-map-and-buckets](go语言设计与实现.assets/153e4cf478dc6c27474a6f29842f9be2.png)
+
+**图 5-4 哈希表的遍历过程**
+
+简单总结一下哈希表遍历的顺序，首先会选出一个绿色的正常桶开始遍历，随后遍历对应的所有黄色溢出桶，最后依次按照索引顺序遍历哈希表中其他的桶，直到所有的桶都被遍历完成。
+
+
+
+#### 字符串
+
+遍历字符串的过程与数组、切片和哈希表非常相似，只是在遍历时会获取字符串中索引对应的字节并将字节转换成 `rune`。我们在遍历字符串时拿到的值都是 `rune` 类型的变量，`for i, r := range s {}` 的结构都会被转换成如下所示的形式：
+
+```
+ha := s
+for hv1 := 0; hv1 < len(ha); {
+    hv1t := hv1
+    hv2 := rune(ha[hv1])
+    if hv2 < utf8.RuneSelf {
+        hv1++
+    } else {
+        hv2, hv1 = decoderune(h1, hv1)
+    }
+    v1, v2 = hv1t, hv2
+}
+```
+
+在前面的字符串一节中我们曾经介绍过字符串是一个只读的字节数组切片，所以范围循环在编译期间生成的框架与切片非常类似，只是细节有一些不同。
+
+使用下标访问字符串中的元素时得到的就是字节，但是这段代码会将当前的字节转换成 `rune` 类型。如果当前的 `rune` 是 ASCII 的，那么只会占用一个字节长度，每次循环体运行之后只需要将索引加一，但是如果当前 `rune` 占用了多个字节就会使用 [`runtime.decoderune`](https://github.com/golang/go/blob/c6e84263865fa418b4d4a60f077d02c10a0fff23/src/runtime/utf8.go#L60-L100) 函数解码，具体的过程就不在这里详细介绍了。
+
+#### 通道
+
+使用 range 遍历 Channel 也是比较常见的做法，一个形如 `for v := range ch {}` 的语句最终会被转换成如下的格式：
+
+```
+ha := a
+hv1, hb := <-ha
+for ; hb != false; hv1, hb = <-ha {
+    v1 := hv1
+    hv1 = nil
+    ...
+}
+```
+
+这里的代码可能与编译器生成的稍微有一些出入，但是结构和效果是完全相同的。该循环会使用 `<-ch` 从管道中取出等待处理的值，这个操作会调用 [`runtime.chanrecv2`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L437-L440) 并阻塞当前的协程，当 [`runtime.chanrecv2`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L437-L440) 返回时会根据布尔值 `hb` 判断当前的值是否存在，如果不存在就意味着当前的管道已经被关闭了，如果存在就会为 `v1` 赋值并清除 `hv1` 变量中的数据，然后会重新陷入阻塞等待新数据。
+
+
+
+### 5.1.4 小结
+
+这一节介绍的两个关键字 for 和 range 都是我们在学习和使用 Go 语言中无法绕开的，通过分析和研究它们的底层原理，让我们对实现细节有了更清楚的认识，包括 Go 语言遍历数组和切片时会复用变量、哈希表的随机遍历原理以及底层的一些优化，这都能帮助我们理解和使用 Go 语言。
+
+- CommonMistakes · Go https://github.com/golang/go/wiki/CommonMistakes[↩︎](https://www.bookstack.cn/read/draveness-golang/816b8b0f4e15285f.md#fnref:1)
+
+
+
 - [5.2 select](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md)
 - [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md)
 - [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
