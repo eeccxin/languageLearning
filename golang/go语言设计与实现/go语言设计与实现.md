@@ -5167,7 +5167,168 @@ for ; hb != false; hv1, hb = <-ha {
 - [5.2 select](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md)
 - [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md)
 - [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
-- [5.5 make 和 new](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md)
+
+## 5.5 make 和 new
+
+> [5.5 make 和 new](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md)
+
+当我们想要在 Go 语言中初始化一个结构时，可能会用到两个不同的关键字 — `make` 和 `new`。因为它们的功能相似，所以初学者可能会对这两个关键字的作用感到困惑[1](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fn:1)，但是它们两者能够初始化的却有较大的不同。
+
+- `make` 的作用是初始化内置的数据结构，也就是我们在前面提到的切片、哈希表和 Channel[2](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fn:2)；
+
+- `new` 的作用是根据传入的类型在堆上分配一片内存空间并返回指向这片内存空间的指针[3](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fn:3)；
+
+我们在代码中往往都会使用如下所示的语句初始化这三类基本类型，这三个语句分别返回了不同类型的数据结构：
+
+```
+slice := make([]int, 0, 100)
+hash := make(map[int]bool, 10)
+ch := make(chan int, 5)
+```
+
+- `slice` 是一个包含 `data`、`cap` 和 `len` 的私有结构体 [`internal/reflectlite.sliceHeader`](https://github.com/golang/go/blob/a5026af57c7934f0856cfd4b539a7859d85a0474/src/internal/reflectlite/value.go#L389-L393)；
+- `hash` 是一个指向 [`runtime.hmap`](https://github.com/golang/go/blob/36f30ba289e31df033d100b2adb4eaf557f05a34/src/runtime/map.go#L115-L129) 结构体的指针；
+- `ch` 是一个指向 [`runtime.hchan`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L32-L51) 结构体的指针；相比与复杂的 `make` 关键字，`new` 的功能就很简单了，它只能接收一个类型作为参数然后返回一个指向该类型的指针：
+
+```
+i := new(int)
+
+
+var v int
+i := &v
+```
+
+
+
+上述代码片段中的两种不同初始化方法是等价的，它们都会创建一个指向 `int` 零值的指针。
+
+![golang-make-and-ne](go语言设计与实现.assets/07429a08ed9d25de704618353b118176.png)
+
+**图 5-14 make 和 new 初始化的类型**
+
+接下来我们将分别介绍 `make` 和 `new` 在初始化不同数据结构时的过程，我们会从编译期间和运行时两个不同阶段理解这两个关键字的原理，不过由于前面的章节已经详细地分析过 `make` 的原理，所以这里会将重点放在另一个关键字 `new` 上。
+
+
+
+### 5.5.1 make
+
+在前面的章节中我们已经谈到过 `make` 在创建切片、哈希表和 Channel 的具体过程，所以在这一小节，我们只是会简单提及 `make` 相关的数据结构的初始化原理。
+
+![golang-make-typecheck](go语言设计与实现.assets/d2900eb45fe1e3c2dbfa0d67ca510c7c.png)
+
+**图 5-15 make 关键字的类型检查**
+
+在编译期间的[类型检查](https://www.bookstack.cn/read/draveness-golang/7ab240185c175c73.md)阶段，Go 语言就将代表 `make` 关键字的 `OMAKE` 节点根据参数类型的不同转换成了 `OMAKESLICE`、`OMAKEMAP` 和 `OMAKECHAN` 三种不同类型的节点，这些节点会调用不同的运行时函数来初始化相应的数据结构。
+
+
+
+### 5.5.2 new
+
+编译器会在[中间代码生成](https://www.bookstack.cn/read/draveness-golang/5a89e04c79706261.md)阶段通过以下两个函数处理该关键字：
+
+- [`cmd/compile/internal/gc.callnew`](https://github.com/golang/go/blob/316fd8cc4a7fab2e1bb45848bc30ea8b8a0b231a/src/cmd/compile/internal/gc/walk.go#L1930-L1940) 函数会将关键字转换成 `ONEWOBJ` 类型的节点[2](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fn:2)；
+
+- `cmd/compile/internal/gc.state.expr`
+
+   
+
+  函数会根据申请空间的大小分两种情况处理：
+
+  - 如果申请的空间为 0，就会返回一个表示空指针的 `zerobase` 变量；
+  - 在遇到其他情况时会将关键字转换成 [`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 函数：
+
+```
+func callnew(t *types.Type) *Node {
+    ...
+    n := nod(ONEWOBJ, typename(t), nil)
+    ...
+    return n
+}
+func (s *state) expr(n *Node) *ssa.Value {
+    switch n.Op {
+    case ONEWOBJ:
+        if n.Type.Elem().Size() == 0 {
+            return s.newValue1A(ssa.OpAddr, n.Type, zerobaseSym, s.sb)
+        }
+        typ := s.expr(n.Left)
+        vv := s.rtcall(newobject, true, []*types.Type{n.Type}, typ)
+        return vv[0]
+    }
+}
+```
+
+需要注意的是，无论是直接使用 `new`，还是使用 `var` 初始化变量，它们在编译器看来就是 `ONEW` 和 `ODCL` 节点。这些节点在这一阶段都会被 [`cmd/compile/internal/gc.walkstmt`](https://github.com/golang/go/blob/316fd8cc4a7fab2e1bb45848bc30ea8b8a0b231a/src/cmd/compile/internal/gc/walk.go#L115-L1532) 转换成通过 [`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 函数在堆上申请内存：
+
+```
+func walkstmt(n *Node) *Node {
+    switch n.Op {
+    case ODCL:
+        v := n.Left
+        if v.Class() == PAUTOHEAP {
+            if prealloc[v] == nil {
+                prealloc[v] = callnew(v.Type)
+            }
+            nn := nod(OAS, v.Name.Param.Heapaddr, prealloc[v])
+            nn.SetColas(true)
+            nn = typecheck(nn, ctxStmt)
+            return walkstmt(nn)
+        }
+    case ONEW:
+        if n.Esc == EscNone {
+            r := temp(n.Type.Elem())
+            r = nod(OAS, r, nil)
+            r = typecheck(r, ctxStmt)
+            init.Append(r)
+            r = nod(OADDR, r.Left, nil)
+            r = typecheck(r, ctxExpr)
+            n = r
+        } else {
+            n = callnew(n.Type.Elem())
+        }
+    }
+}
+```
+
+不过这也不是绝对的，如果通过 `var` 或者 `new` 创建的变量不需要在当前作用域外生存，例如不用作为返回值返回给调用方，那么就不需要初始化在堆上。
+
+[`runtime.newobject`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L1162-L1164) 函数会是获取传入类型占用空间的大小，调用 [`runtime.mallocgc`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L889-L1132) 在堆上申请一片内存空间并返回指向这片内存空间的指针：
+
+```
+func newobject(typ *_type) unsafe.Pointer {
+    return mallocgc(typ.size, typ, true)
+}
+```
+
+
+
+[`runtime.mallocgc`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L889-L1132) 函数的实现大概有 200 多行代码，我们会在后面的章节中详细分析 Go 语言的内存管理机制。
+
+### 5.5.3 小结
+
+到了最后，简单总结一下 Go 语言中 `make` 和 `new` 关键字的实现原理，`make` 关键字的作用是创建切片、哈希表和 Channel 等内置的数据结构，而 `new` 的作用是为类型申请一片内存空间，并返回指向这片内存的指针。
+
+- Make and new [https://groups.google.com/forum/#!topic/golang-nuts/kWXYU95XN04/discussion%5B1-25%5D](https://groups.google.com/forum/#!topic/golang-nuts/kWXYU95XN04/discussion[1-25])[↩︎](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fnref:1)
+- Allocation with make https://golang.org/doc/effective_go.html#allocation_make[↩︎](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fnref:2)
+- Allocation with new https://golang.org/doc/effective_go.html#allocation_new[↩︎](https://www.bookstack.cn/read/draveness-golang/bb191ed6f01d91ba.md#fnref:3)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 - [5.6 推荐阅读](https://www.bookstack.cn/read/draveness-golang/d9282a6420fd069c.md)
 
 
@@ -5199,49 +5360,436 @@ for ; hb != false; hv1, hb = <-ha {
 
 # 第九章 标准库
 
-- [9.1 JSON](https://www.bookstack.cn/read/draveness-golang/f6b06e1693601b3a.md)
+## 9.1 JSON
+
+> [9.1 JSON](https://www.bookstack.cn/read/draveness-golang/f6b06e1693601b3a.md)
+
+JSON（JavaScript 对象表示，JavaScript Object Notation）作为一种轻量级的数据交换格式[1](https://www.bookstack.cn/read/draveness-golang/f6b06e1693601b3a.md#fn:1)，在今天几乎占据了绝大多数的市场份额。虽然与更紧凑的数据交换格式相比，它的序列化和反序列化性能不足，但是它也提供了良好的可读性与易用性，在不追求机制性能的情况下，JSON 是一种非常好的选择。
+
+### 9.1.1 设计原理
+
+几乎所有的现代编程语言都会将处理 JSON 的函数直接纳入标准库，Go 语言也不例外，它通过 [`encoding/json`](https://golang.org/pkg/encoding/json/) 对外提供标准的 JSON 序列化和反序列化方法，即 [`encoding/json.Marshal`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L158) 和 [`encoding/json.Unmarshal`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L96)，它们也是包中最常用的两个方法。
+
+![json-marshal-and-unmarshal](go语言设计与实现.assets/9fb42af8026af691f73e5132bc392d41.png)
+
+**图 9-1 序列化和反序列化**
+
+序列化和反序列化的开销完全不同，JSON 反序列化的开销是序列化开销的好几倍，相信这背后的原因也非常好理解。
+
+Go 语言中的 JSON 序列化过程不需要被序列化的对象预先实现任何接口，它会通过反射获取结构体或者数组中的值并以树形的结构递归地进行编码，标准库也会根据 [`encoding/json.Unmarshal`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L96) 中传入的值对 JSON 进行解码。
+
+**Go 语言 JSON 标准库编码和解码的过程大量地运用了反射这一特性**，你会在本节的后半部分看到大量的反射代码，这里就不过多介绍了。我们在这里会简单介绍 JSON 标准库中的接口和标签，这是它为开发者提供的为数不多的影响编解码过程的接口。
 
 
 
+#### 接口
+
+JSON 标准库中提供了 [`encoding/json.Marshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/encode.go#L225) 和 [`encoding/json.Unmarshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L118) 两个接口分别可以影响 JSON 的序列化和反序列化结果：
+
+```go
+type Marshaler interface {
+    MarshalJSON() ([]byte, error)
+}
+type Unmarshaler interface {
+    UnmarshalJSON([]byte) error
+}
+```
+
+> go marshaler序列化结果是[]byte,可以后续格式化为string
+
+在 JSON 序列化和反序列化的过程中，它们会使用反射判断结构体类型是否实现了上述接口，如果实现了上述接口就会优先使用对应的方法进行编码和解码操作，除了这两个方法之外，Go 语言其实还提供了另外两个用于控制编解码结果的方法，即 [`encoding.TextMarshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/encoding.go#L36) 和 [`encoding.TextUnmarshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/encoding.go#L45)：
+
+```go
+type TextMarshaler interface {
+    MarshalText() (text []byte, err error)
+}
+type TextUnmarshaler interface {
+    UnmarshalText(text []byte) error
+}
+```
+
+一旦发现 JSON 相关的序列化方法没有被实现，上述两个方法会作为候选方法被 JSON 标准库调用，参与编解码的过程。总得来说，我们可以在任意类型上实现上述这四个方法自定义最终的结果，后面的两个方法的适用范围更广，但是不会被 JSON 标准库优先调用。
 
 
 
+#### 标签
+
+Go 语言的结构体标签也是一个比较有趣的功能，在默认情况下，当我们在序列化和反序列化结构体时，标准库都会认为字段名和 JSON 中的键具有一一对应的关系，然而 Go 语言的字段一般都是驼峰命名法，JSON 中下划线的命名方式相对比较常见，所以使用标签这一特性直接建立键与字段之间的映射关系是一个非常方便的设计。
+
+![struct-and-json](go语言设计与实现.assets/07ab90e9ad7c487edd562b089d5a736b.png)
+
+**图 9-2 结构体与 JSON 的映射**
+
+JSON 中的标签由两部分组成，如下所示的 `name` 和 `age` 都是标签名，后面的所有的字符串是标签选项，即 [`encoding/json.tagOptions`](https://github.com/golang/go/blob/50bd1c4d4eb4fac8ddeb5f063c099daccfb71b26/src/encoding/json/tags.go#L13)，标签名和字段名会建立一一对应的关系，后面的标签选项也会影响编解码的过程：
+
+```go
+type Author struct {
+    Name string `json:"name,omitempty"`
+    Age  int32  `json:"age,string,omitempty"`
+}
+```
+
+常见的两个标签是 `string` 和 `omitempty`，前者表示当前的整数或者浮点数是由 JSON 中的字符串表示的，而另一个字段 `omitempty` 会在字段为零值时，直接在生成的 JSON 中忽略对应的键值对，例如：`"age": 0`、`"author": ""` 等。标准库会使用 [`encoding/json.parseTag`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/tags.go#L17) 函数来解析标签：
+
+```go
+func parseTag(tag string) (string, tagOptions) {
+    if idx := strings.Index(tag, ","); idx != -1 {
+        return tag[:idx], tagOptions(tag[idx+1:])
+    }
+    return tag, tagOptions("")
+}
+```
+
+从该方法的实现中，我们能分析出 JSON 标准库中的合法标签是什么形式的 — **标签名和标签选项**都以 `,` 连接，最前面的字符串为标签名，后面的都是标签选项。
+
+> 每个标签会自己定义标签选项的格式，比如gorm的标签选项是以；分隔
+>
+> ```go
+> type UserPointFlowDbRecord struct {
+> 	Id         uint64               `gorm:"column:id;primary_key;AUTO_INCREMENT;NOT NULL" json:"id,omitempty"`
+> }
+> ```
 
 
 
+### 9.1.2 序列化
+
+[`encoding/json.Marshal`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L158) 是 JSON 标准库中提供的最简单的序列化函数，它会接收一个 `interface{}` 类型的值作为参数，这也意味着几乎全部的 Go 语言变量都可以被 JSON 标准库序列化，为了提供如此复杂和通用的功能，在静态语言中使用反射是常见的选项，我们来深入了解一下该方法的实现：
+
+```
+func Marshal(v interface{}) ([]byte, error) {
+    e := newEncodeState()
+    err := e.marshal(v, encOpts{escapeHTML: true})
+    if err != nil {
+        return nil, err
+    }
+    buf := append([]byte(nil), e.Bytes()...)
+    encodeStatePool.Put(e)
+    return buf, nil
+}
+```
+
+上述方法会调用 [`encoding/json.newEncodeState`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L302) 从全局的编码状态池中获取 [`encoding/json.encodeState`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L285)，随后的序列化过程都会使用这个编码状态，该结构体也会在编码结束后被重新放回池中以便重复利用。
+
+![json-marshal-call-stack](go语言设计与实现.assets/fd75e905c515a8f292e3b327c16bbac1.png)
+
+**图 9-3 序列化调用栈**
 
 
 
+按照如上所示的复杂调用栈，一系列的序列化方法在最后获取了对象的反射类型并调用了 [`encoding/json.newTypeEncoder`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L415) 这个核心的编码方法，该方法会**递归**地为所有的类型找到对应的编码方法，不过它的执行过程可以分成以下两个步骤：
+
+1. 获取用户自定义的 [`encoding/json.Marshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/encode.go#L225) 或者 [`encoding.TextMarshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/encoding.go#L36) 编码器；
+2. 获取标准库中为基本类型内置的 JSON 编码器；
+
+在该方法的第一部分，我们会检查当前值的类型是否可以使用用户自定义的编码器，这里有两种不同的判断方法：
+
+```go
+func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
+    if t.Kind() != reflect.Ptr && allowAddr && reflect.PtrTo(t).Implements(marshalerType) {
+        return newCondAddrEncoder(addrMarshalerEncoder, newTypeEncoder(t, false))
+    }
+    if t.Implements(marshalerType) {
+        return marshalerEncoder
+    }
+    if t.Kind() != reflect.Ptr && allowAddr && reflect.PtrTo(t).Implements(textMarshalerType) {
+        return newCondAddrEncoder(addrTextMarshalerEncoder, newTypeEncoder(t, false))
+    }
+    if t.Implements(textMarshalerType) {
+        return textMarshalerEncoder
+    }
+    ...
+}
+```
 
 
 
+[`encoding/json.newTypeEncoder`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L415) 方法随后会根据传入值的反射类型获取对应的编码器，其中包括 `bool`、`int`、`float` 等基本类型编码器等和数组、结构体、切片等复杂类型的编码器：
+
+```go
+func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
+    ...
+    switch t.Kind() {
+    case reflect.Bool:
+        return boolEncoder
+    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+        return intEncoder
+    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+        return uintEncoder
+    case reflect.Float32:
+        return float32Encoder
+    case reflect.Float64:
+        return float64Encoder
+    case reflect.String:
+        return stringEncoder
+    case reflect.Interface:
+        return interfaceEncoder
+    case reflect.Struct:
+        return newStructEncoder(t)
+    case reflect.Map:
+        return newMapEncoder(t)
+    case reflect.Slice:
+        return newSliceEncoder(t)
+    case reflect.Array:
+        return newArrayEncoder(t)
+    case reflect.Ptr:
+        return newPtrEncoder(t)
+    default:
+        return unsupportedTypeEncoder
+    }
+}
+```
 
 
 
+我们在这里就不一一介绍全部的内置类型编码器了，只挑选其中的几个帮助各位读者了解整体的设计。首先我们来看布尔值的 JSON 编码器，它的实现很简单，甚至没有太多值得介绍的地方：
+
+```go
+func boolEncoder(e *encodeState, v reflect.Value, opts encOpts) {
+    if opts.quoted {
+        e.WriteByte('"')
+    }
+    if v.Bool() {
+        e.WriteString("true")
+    } else {
+        e.WriteString("false")
+    }
+    if opts.quoted {
+        e.WriteByte('"')
+    }
+}
+```
 
 
 
+它会根据当前值向编码状态中写入不同的字符串，也就是 `true` 或者 `false`，除此之外还会根据编码配置决定是否要在布尔值周围写入双引号 `"`，而其他的基本类型编码器也都大同小异。
+
+复杂类型的编码器有着相对复杂的控制结构，我们在这里以结构体的编码器 [`encoding/json.structEncoder`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L720) 为例介绍它们的原理，[`encoding/json.newStructEncoder`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L767) 会为当前结构体的所有字段调用 [`encoding/json.typeEncoder`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L379) 获取类型编码器并返回 [`encoding/json.structEncoder.encode`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L729) 方法：
+
+```go
+func newStructEncoder(t reflect.Type) encoderFunc {
+    se := structEncoder{fields: cachedTypeFields(t)}
+    return se.encode
+}
+```
+
+从 [`encoding/json.structEncoder.encode`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L729) 的实现我们能看出结构体序列的结果，该方法会遍历结构体中的全部字段，在写入了字段名后，它会调用字段对应类型的编码方法将该字段对应的 JSON 写入缓冲区：
+
+```go
+func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
+    next := byte('{')
+FieldLoop:
+    for i := range se.fields.list {
+        f := &se.fields.list[i]
+        fv := v
+        for _, i := range f.index {
+            if fv.Kind() == reflect.Ptr {
+                if fv.IsNil() {
+                    continue FieldLoop
+                }
+                fv = fv.Elem()
+            }
+            fv = fv.Field(i)
+        }
+        if f.omitEmpty && isEmptyValue(fv) {
+            continue
+        }
+        e.WriteByte(next)
+        next = ','
+        e.WriteString(f.nameNonEsc)
+        opts.quoted = f.quoted
+        f.encoder(e, fv, opts)
+    }
+    if next == '{' {
+        e.WriteString("{}")
+    } else {
+        e.WriteByte('}')
+    }
+}
+```
+
+数组以及指针等编码器的实现原理与该方法也没有太多的区别，它们都会使用类似的策略递归地调用持有字段的编码方法，这也就能形成一个如下图所示的树形结构：
+
+![struct-encoder](go语言设计与实现.assets/3f472931598a7ba44858ed85c1569771.png)
+
+**图 9-4 序列化与树形结构体**
+
+树形结构的所有叶节点都是基础类型编码器或者开发者自定义的编码器，得到了整棵树的编码器之后会调用 [`encoding/json.encodeState.reflectValue`](https://github.com/golang/go/blob/e43239aabe2fbbd8ad08b46fb2a7c3d9a4d36589/src/encoding/json/encode.go#L357) 从根节点依次调用整棵树的序列化函数，整个 JSON 序列化的过程其实是查找类型和子类型的编码方法并调用的过程，它利用了大量反射的特性做到了足够的通用。
 
 
 
+### 9.1.3 反序列化
+
+标准库会使用 [`encoding/json.Unmarshal`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L96) 函数处理 JSON 的反序列化，**与执行过程确定的序列化相比，反序列化的过程比较像一个逐渐探索的过程**，所以会复杂很多，开销也会高出几倍。因为 Go 语言的表达能力比较有限，反序列化的使用相对比较繁琐，需要传入一个变量帮助标准库进行反序列化：
+
+```go
+func Unmarshal(data []byte, v interface{}) error {
+    var d decodeState
+    err := checkValid(data, &d.scan)
+    if err != nil {
+        return err
+    }
+    d.init(data)
+    return d.unmarshal(v)
+}
+```
+
+在真正执行反序列化之前，我们会先调用 [`encoding/json.checkValid`](https://github.com/golang/go/blob/a1103dcc27b9c85800624367ebb89ef46d4307af/src/encoding/json/scanner.go#L30) 验证传入 JSON 的合法性保证在反序列化的过程中不会遇到语法错误的问题，在通过合法性的验证之后，标准库就会初始化数据并调用 [`encoding/json.decodeState.unmarshal`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L170) 开始反序列化了：
+
+```go
+func (d *decodeState) unmarshal(v interface{}) error {
+    rv := reflect.ValueOf(v)
+    if rv.Kind() != reflect.Ptr || rv.IsNil() {
+        return &InvalidUnmarshalError{reflect.TypeOf(v)}
+    }
+    d.scan.reset()
+    d.scanWhile(scanSkipSpace)
+    err := d.value(rv)
+    if err != nil {
+        return d.addErrorContext(err)
+    }
+    return d.savedError
+}
+```
+
+如果传入的值不是指针或者是空指针，当前方法就会返回我们经常会见到的错误 [`encoding/json.InvalidUnmarshalError`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L155)，使用格式化输出可以将该错误转换成 `json: Unmarshal(non-pointer xxx)`。该方法调用的 [`encoding/json.decodeState.value`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L370) 是所有反序列化过程的执行入口：
+
+```go
+func (d *decodeState) value(v reflect.Value) error {
+    switch d.opcode {
+    default:
+        panic(phasePanicMsg)
+    case scanBeginArray:
+        ...
+    case scanBeginLiteral:
+        ...
+    case scanBeginObject:
+        if v.IsValid() {
+            if err := d.object(v); err != nil {
+                return err
+            }
+        } else {
+            d.skip()
+        }
+        d.scanNext()
+    }
+    return nil
+}
+```
+
+该方法作为最顶层的反序列化方法可以接收三种不同类型的值，也就是数组、字面量和对象，这三种类型都可以作为 JSON 的顶层对象，我们首先来了解一下标准库是如何解析 JSON 中对象的，该过程会使用 [`encoding/json.decodeState.object`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L620) 函数进行反序列化，它会先调用 [`encoding/json.indirect`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L439) 函数查找当前类型对应的非指针类型：
+
+```go
+func (d *decodeState) object(v reflect.Value) error {
+    u, ut, pv := indirect(v, false)
+    if u != nil {
+        start := d.readIndex()
+        d.skip()
+        return u.UnmarshalJSON(d.data[start:d.off])
+    }
+    ...
+}
+```
+
+在调用 [`encoding/json.indirect`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L439) 的过程中，如果当前值的类型是 `**Type`，那么它会依次检查形如 `**Type`、`*Type` 和 `Type` 类型是否实现了 [`encoding/json.Unmarshal`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L96) 或者 [`encoding.TextUnmarshaler`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/encoding.go#L45) 接口；如果实现了该接口，标准库会直接调用 `UnmarshalJSON` 方法使用开发者定义的方法完成反序列化。
+
+在其他情况下，我们仍然会回到默认的逻辑中处理对象中的键值对，如下所示的代码会调用 [`encoding/json.decodeState.rescanLiteral`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L315) 方法扫描 JSON 中的键并在结构体中找到对应字段的反射值，接下来继续扫描符号 `:` 并调用 [`encoding/json.decodeState.value`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L370) 解析对应的值：
+
+```go
+func (d *decodeState) object(v reflect.Value) error {
+    ...
+    v = pv
+    t := v.Type()
+    fields = cachedTypeFields(t)
+    for {
+        start := d.readIndex()
+        d.rescanLiteral()
+        item := d.data[start:d.readIndex()]
+        key, _ := d.unquoteBytes(item)
+        var subv reflect.Value
+        var f *field
+        if i, ok := fields.nameIndex[string(key)]; ok {
+            f = &fields.list[i]
+        }
+        if f != nil {
+            subv = v
+            for _, i := range f.index {
+                subv = subv.Field(i)
+            }
+        }
+        if d.opcode != scanObjectKey {
+            panic(phasePanicMsg)
+        }
+        d.scanWhile(scanSkipSpace)
+        if err := d.value(subv); err != nil {
+            return err
+        }
+        if d.opcode == scanEndObject {
+            break
+        }
+    }
+    return nil
+}
+```
+
+当上述方法调用 [`encoding/json.decodeState.value`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L370) 时，该方法会重新判断键对应的值是否是对象、数组或者字面量，因为数组和对象都是集合类型，所以该方法会递归地进行扫描，在这里也就不再继续介绍这些集合类型的解析过程了，我们来简单分析一下字面量是如何被处理的：
+
+```go
+func (d *decodeState) value(v reflect.Value) error {
+    switch d.opcode {
+    default:
+        panic(phasePanicMsg)
+    case scanBeginArray:
+        ...
+    case scanBeginObject:
+        ...
+    case scanBeginLiteral:
+        start := d.readIndex()
+        d.rescanLiteral()
+        if v.IsValid() {
+            if err := d.literalStore(d.data[start:d.readIndex()], v, false); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+```
+
+字面量的扫描会通过 [`encoding/json.decodeState.rescanLiteral`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L315)，该方法会依次扫描缓冲区中的字符并根据字符的不同对字符串进行切片，整个过程有点像编译器的词法分析：
+
+```go
+func (d *decodeState) rescanLiteral() {
+    data, i := d.data, d.off
+Switch:
+    switch data[i-1] {
+    case '"': // string
+        ...
+    case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-': // number
+        ...
+    case 't': // true
+        i += len("rue")
+    case 'f': // false
+        i += len("alse")
+    case 'n': // null
+        i += len("ull")
+    }
+    if i < len(data) {
+        d.opcode = stateEndValue(&d.scan, data[i])
+    } else {
+        d.opcode = scanEnd
+    }
+    d.off = i + 1
+}
+```
+
+因为 JSON 中的字面量其实也只包含字符串、数字、布尔值和空值几种，所以该方法的实现也不会特别复杂，当该方法扫描了对应的字面量之后，就会调用 [`encoding/json.decodeState.literalStore`](https://github.com/golang/go/blob/ee8972cd126f0d575be90c0ffbb08fc09d6ede19/src/encoding/json/decode.go#L867) 字面量存储到反射类型变量所在的地址中，在这个过程中会调用反射的 [`reflect.Value.SetInt`](https://github.com/golang/go/blob/a9f8f02f3cfba18501669cdf58ae75ca36a4cff0/src/reflect/value.go#L1611)、[`reflect.Value.SetFloat`](https://github.com/golang/go/blob/a9f8f02f3cfba18501669cdf58ae75ca36a4cff0/src/reflect/value.go#L1597) 和 [`reflect.Value.SetBool`](https://github.com/golang/go/blob/a9f8f02f3cfba18501669cdf58ae75ca36a4cff0/src/reflect/value.go#L1553) 等方法。
 
 
 
+### 9.1.4 小结
 
+JSON 本身就是一种树形的数据结构，无论是序列化还是反序列化，都会遵循自顶向下的编码和解码过程，使用递归的方式处理 JSON 对象。作为标准库的 JSON 提供的接口非常简洁，虽然它的性能一直被开发者所诟病，但是作为框架它提供了很好的通用性，通过分析 JSON 库的实现，我们也可以从中学习到使用反射的各种方法。
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+1. Introducing JSON https://www.json.org/json-en.html [↩︎](https://www.bookstack.cn/read/draveness-golang/f6b06e1693601b3a.md#fnref:1)
 
