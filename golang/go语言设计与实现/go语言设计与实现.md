@@ -5777,37 +5777,344 @@ sclose:
 
 
 
+## 5.3 defer
+
+> [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md)
+
+很多现代的编程语言中都有 `defer` 关键字，Go 语言的 `defer` 会在当前函数或者方法返回之前执行传入的函数。它会经常被用于关闭文件描述符、关闭数据库连接以及解锁资源。
+
+在这一节中我们就会深入 Go 语言的源代码介绍 `defer` 关键字的实现原理，相信读者读完这一节会对 `defer` 的数据结构、实现以及调用过程有着更清晰的理解。
+
+作为一个编程语言中的关键字，`defer` 的实现一定是由编译器和运行时共同完成的，不过在深入源码分析它的实现之前我们还是需要了解 `defer` 关键字的常见使用场景以及使用时的注意事项。
+
+使用 `defer` 的最常见场景就是在函数调用结束后完成一些收尾工作，例如在 `defer` 中回滚数据库的事务：
+
+```
+func createPost(db *gorm.DB) error {
+    tx := db.Begin()
+    defer tx.Rollback()
+    if err := tx.Create(&Post{Author: "Draveness"}).Error; err != nil {
+        return err
+    }
+    return tx.Commit().Error
+}
+```
+
+在使用数据库事务时，我们可以使用如上所示的代码在创建事务之后就立刻调用 `Rollback` 保证事务一定会回滚。哪怕事务真的执行成功了，那么调用 `tx.Commit()` 之后再执行 `tx.Rollback()` 也不会影响已经提交的事务。
+
+
+
+### 5.3.1 现象
+
+我们在 Go 语言中使用 `defer` 时会遇到两个比较常见的问题，这里会介绍具体的场景并分析这两个现象背后的设计原理：
+
+- `defer` 关键字的调用时机以及多次调用 `defer` 时执行顺序是如何确定的；（先进后出，类似栈）
+- `defer` 关键字使用传值的方式传递参数时会进行**预计算**，导致不符合预期的结果；
+
+#### 作用域
+
+向 `defer` 关键字传入的函数会在函数返回之前运行。假设我们在 `for` 循环中多次调用 `defer` 关键字：
+
+```go
+func main() {
+    for i := 0; i < 5; i++ {
+        defer fmt.Println(i)
+    }
+}
+$ go run main.go
+4
+3
+2
+1
+0
+```
+
+运行上述代码会倒序执行所有向 `defer` 关键字中传入的表达式，最后一次 `defer` 调用传入了 `fmt.Println(4)`，所以会这段代码会优先打印 4。我们可以通过下面这个简单例子强化对 `defer` 执行时机的理解：
+
+```
+func main() {
+    {
+        defer fmt.Println("defer runs")
+        fmt.Println("block ends")
+    }
+    fmt.Println("main ends")
+}
+$ go run main.go
+block ends
+main ends
+defer runs
+```
+
+从上述代码的输出我们会发现，`defer` 传入的函数不是在退出代码块的作用域时执行的，它只会在当前函数和方法返回之前被调用。
+
+
+
+#### 预计算参数
+
+Go 语言中所有的函数调用都是传值的，`defer` 虽然是关键字，但是也继承了这个特性。假设我们想要计算 `main` 函数运行的时间，可能会写出以下的代码：
+
+```
+func main() {
+    startedAt := time.Now()
+    defer fmt.Println(time.Since(startedAt))
+    time.Sleep(time.Second)
+}
+$ go run main.go
+0s
+```
+
+然而上述代码的运行结果并不符合我们的预期，这个现象背后的原因是什么呢？经过分析，**我们会发现调用 `defer` 关键字会立刻对函数中引用的外部参数进行拷贝**，所以 `time.Since(startedAt)` 的结果不是在 `main` 函数退出之前计算的，而是在 `defer` 关键字调用时计算的，最终导致上述代码输出 0s。
+
+
+
+想要解决这个问题的方法非常简单，我们只需要向 `defer` 关键字传入匿名函数：
+
+```go
+func main() {
+    startedAt := time.Now()
+    defer func() { fmt.Println(time.Since(startedAt)) }()
+    time.Sleep(time.Second)
+}
+$ go run main.go
+1s
+```
+
+虽然调用 `defer` 关键字时也使用值传递，但是因为拷贝的是函数指针，所以 `time.Since(startedAt)` 会在 `main` 函数执行前被调用并打印出符合预期的结果。
+
+
+
+### 5.3.2 数据结构
+
+在介绍 `defer` 函数的执行过程与实现原理之前，我们首先来了解一下 `defer` 关键字在 Go 语言源代码中对应的数据结构：
+
+```go
+type _defer struct {
+    siz     int32
+    started bool
+    sp      uintptr
+    pc      uintptr
+    fn      *funcval
+    _panic  *_panic
+    link    *_defer
+}
+```
+
+[`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体是延迟调用链表上的一个元素，所有的结构体都会通过 `link` 字段串联成链表。
+
+![golang-defer-link](go语言设计与实现.assets/9aec08defae33c08897ca9b3a4f4c0d3.png)
+
+**图 5-10 延迟调用链表**
+
+我们简单介绍一下 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体中的几个字段：
+
+- `siz` 是参数和结果的内存大小；
+- `sp` 和 `pc` 分别代表栈指针和调用方的程序计数器；
+- `fn` 是 `defer` 关键字中传入的函数；
+- `_panic` 是触发延迟调用的结构体，可能为空；
+
+除了上述的这些字段之外，[`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 中还包含一些垃圾回收机制使用的字段，这里为了减少理解的成本就都省去了。
+
+
+
+## 5.3.3 编译过程
+
+中间代码生成阶段执行的被 [`cmd/compile/internal/gc.state.stmt`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L1023-L1502) 函数会处理 `defer` 关键字。从下面截取的这段代码中，我们会发现编译器调用了 [`cmd/compile/internal/gc.state.call`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L4324-L4517) 函数，这表示 `defer` 在编译器看来也是函数调用：
+
+```go
+func (s *state) stmt(n *Node) {
+    switch n.Op {
+    case ODEFER:
+        s.call(n.Left, callDefer)
+    }
+}
+```
+
+[`cmd/compile/internal/gc.state.call`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L4324-L4517) 函数会负责了为所有函数和方法调用生成中间代码，它的工作包括以下内容：
+
+- 获取需要执行的函数名、闭包指针、代码指针和函数调用的接收方；
+- 获取栈地址并将函数或者方法的参数写入栈中；
+- 使用 [`cmd/compile/internal/gc.state.newValue1A`](https://github.com/golang/go/blob/4d5bb9c60905b162da8b767a8a133f6b4edcaa65/src/cmd/compile/internal/gc/ssa.go#L764-L766) 以及相关函数生成函数调用的中间代码；
+- 如果当前调用的函数是 `defer`，那么就会单独生成相关的结束代码块；
+- 获取函数的返回值地址并结束当前调用；
+
+```
+func (s *state) call(n *Node, k callKind) *ssa.Value {
+    ...
+    var call *ssa.Value
+    switch {
+    case k == callDefer:
+        call = s.newValue1A(ssa.OpStaticCall, types.TypeMem, deferproc, s.mem())
+    ...
+    }
+    call.AuxInt = stksize
+    s.vars[&memVar] = call
+    ...
+}
+```
+
+从上述代码中我们能看到，`defer` 关键字在运行期间会调用 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 函数，这个函数接收了参数的大小和闭包所在的地址两个参数。
+
+编译器不仅将 `defer` 关键字都转换成 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 函数，它还会通过以下三个步骤为所有调用 `defer` 的函数末尾插入 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 的函数调用：
+
+- [`cmd/compile/internal/gc.walkstmt`](https://github.com/golang/go/blob/316fd8cc4a7fab2e1bb45848bc30ea8b8a0b231a/src/cmd/compile/internal/gc/walk.go#L115-L351) 在遇到 `ODEFER` 节点时会执行 `Curfn.Func.SetHasDefer(true)` 设置当前函数的 `hasdefer`；
+- [`cmd/compile/internal/gc.buildssa`](https://github.com/golang/go/blob/98d2717499575afe13d9f815d46fcd6e384efb0c/src/cmd/compile/internal/gc/ssa.go#L281-L451) 会执行 `s.hasdefer = fn.Func.HasDefer()` 更新 `state` 的 `hasdefer`；
+- [`cmd/compile/internal/gc.state.exit`](https://github.com/golang/go/blob/98d2717499575afe13d9f815d46fcd6e384efb0c/src/cmd/compile/internal/gc/ssa.go#L1511-L1552) 会根据 `state` 的 `hasdefer` 在函数返回之前插入 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 的函数调用；
+
+```
+func (s *state) exit() *ssa.Block {
+    if s.hasdefer {
+        s.rtcall(Deferreturn, true, nil)
+    }
+    ...
+}
+```
+
+Go 语言的编译器不仅将 `defer` 转换成了 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 的函数调用，还在所有调用 `defer` 的函数结尾插入了 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571)，接下来我们就需要了解这两个运行时方法的实现原理了。
+
+### 5.3.4 运行过程
+
+`defer` 关键字的运行时实现分成两个部分：
+
+- [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 函数负责创建新的延迟调用；
+- [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 函数负责在函数调用结束时执行所有的延迟调用；
+
+这两个函数是 `defer` 关键字运行时机制的入口，我们从它们开始分别介绍这两个函数的执行过程。
+
+#### 创建延迟调用
+
+[`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 会为 `defer` 创建一个新的 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体、设置它的函数指针 `fn`、程序计数器 `sp` 和栈指针 `sp` 并将相关的参数拷贝到相邻的内存空间中：
+
+```
+func deferproc(siz int32, fn *funcval) {
+    sp := getcallersp()
+    argp := uintptr(unsafe.Pointer(&fn)) + unsafe.Sizeof(fn)
+    callerpc := getcallerpc()
+    d := newdefer(siz)
+    if d._panic != nil {
+        throw("deferproc: d.panic != nil after newdefer")
+    }
+    d.fn = fn
+    d.pc = callerpc
+    d.sp = sp
+    switch siz {
+    case 0:
+    case sys.PtrSize:
+        *(*uintptr)(deferArgs(d)) = *(*uintptr)(unsafe.Pointer(argp))
+    default:
+        memmove(deferArgs(d), unsafe.Pointer(argp), uintptr(siz))
+    }
+    return0()
+}
+```
+
+最后调用的 [`runtime.return0`](https://github.com/golang/go/blob/a38a917aee626a9b9d5ce2b93964f586bf759ea0/src/runtime/asm_386.s#L1320-L1322) 函数的作用是避免无限递归调用 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571)，它是唯一一个不会触发由延迟调用的函数了。
+
+[`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 中 [`runtime.newdefer`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L383-L430) 的作用就是想尽办法获得一个 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体，办法总共有三个：
+
+- 从调度器的延迟调用缓存池 `sched.deferpool` 中取出结构体并将该结构体追加到当前 Goroutine 的缓存池中；
+- 从 Goroutine 的延迟调用缓存池 `pp.deferpool` 中取出结构体；
+- 通过 [`runtime.mallocgc`](https://github.com/golang/go/blob/5042317d6919d4c84557e04be35130430e8d1dd4/src/runtime/malloc.go#L889-L1132) 创建一个新的结构体；
+
+```
+func newdefer(siz int32) *_defer {
+    var d *_defer
+    sc := deferclass(uintptr(siz))
+    gp := getg()
+    if sc < uintptr(len(p{}.deferpool)) {
+        pp := gp.m.p.ptr()
+        if len(pp.deferpool[sc]) == 0 && sched.deferpool[sc] != nil {
+            for len(pp.deferpool[sc]) < cap(pp.deferpool[sc])/2 && sched.deferpool[sc] != nil {
+                d := sched.deferpool[sc]
+                sched.deferpool[sc] = d.link
+                pp.deferpool[sc] = append(pp.deferpool[sc], d)
+            }
+        }
+        if n := len(pp.deferpool[sc]); n > 0 {
+            d = pp.deferpool[sc][n-1]
+            pp.deferpool[sc][n-1] = nil
+            pp.deferpool[sc] = pp.deferpool[sc][:n-1]
+        }
+    }
+    if d == nil {
+        total := roundupsize(totaldefersize(uintptr(siz)))
+        d = (*_defer)(mallocgc(total, deferType, true))
+    }
+    d.siz = siz
+    d.link = gp._defer
+    gp._defer = d
+    return d
+}
+```
+
+无论使用哪种方式获取 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878)，它都会被追加到所在的 Goroutine `_defer` 链表的**最前面**。
+
+![golang-new-defe](go语言设计与实现.assets/83655588e61028c6c0f7c8b931101ce0.png)
+
+**图 5-11 追加新的延迟调用**
+
+`defer` 关键字插入时是从后向前的，而 `defer` 关键字执行是从前向后的，而这就是后调用的 `defer` 会优先执行的原因。
+
+#### 执行延迟调用
+
+[`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 会从 Goroutine 的 `_defer` 链表中取出最前面的 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体并调用 [`runtime.jmpdefer`](https://github.com/golang/go/blob/a38a917aee626a9b9d5ce2b93964f586bf759ea0/src/runtime/asm_386.s#L614-L624) 函数传入需要执行的函数和参数：
+
+```
+func deferreturn(arg0 uintptr) {
+    gp := getg()
+    d := gp._defer
+    if d == nil {
+        return
+    }
+    sp := getcallersp()
+    switch d.siz {
+    case 0:
+    case sys.PtrSize:
+        *(*uintptr)(unsafe.Pointer(&arg0)) = *(*uintptr)(deferArgs(d))
+    default:
+        memmove(unsafe.Pointer(&arg0), deferArgs(d), uintptr(d.siz))
+    }
+    fn := d.fn
+    gp._defer = d.link
+    freedefer(d)
+    jmpdefer(fn, uintptr(unsafe.Pointer(&arg0)))
+}
+```
+
+[`runtime.jmpdefer`](https://github.com/golang/go/blob/a38a917aee626a9b9d5ce2b93964f586bf759ea0/src/runtime/asm_386.s#L614-L624) 是一个用汇编语言实现的运行时函数，它的工作就是跳转 `defer` 所在的代码段并在执行结束之后跳转回 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571)。
+
+```
+TEXT runtime·jmpdefer(SB), NOSPLIT, $0-8
+    MOVL    fv+0(FP), DX    // fn
+    MOVL    argp+4(FP), BX    // caller sp
+    LEAL    -4(BX), SP    // caller sp after CALL
+#ifdef GOBUILDMODE_shared
+    SUBL    $16, (SP)    // return to CALL again
+#else
+    SUBL    $5, (SP)    // return to CALL again
+#endif
+    MOVL    0(DX), BX
+    JMP    BX    // but first run the deferred function
+```
+
+[`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 函数会多次判断当前 Goroutine 的 `_defer` 链表中是否有未执行的剩余结构，在所有的延迟函数调用都执行完成之后，该函数才会返回。
+
+### 5.3.5 小结
+
+`defer` 关键字的实现主要依靠编译器和运行时的协作，我们总结一下本节提到的内容：
+
+- 编译期；
+  - 将 `defer` 关键字被转换 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258)；
+  - 在调用 `defer` 关键字的函数返回之前插入 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571)；
+- 运行时：
+  - [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 会将一个新的 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体追加到当前 Goroutine 的链表头；
+  - [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 会从 Goroutine 的链表中取出 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构并依次执行；
+
+我们在本节前面提到的两个现象在这里也可以解释清楚了：
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-- [5.3 defer](https://www.bookstack.cn/read/draveness-golang/f434f07b7b465a9f.md)
 - [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
 
 ## 5.5 make 和 new
@@ -5990,7 +6297,7 @@ Go 语言中的每一个请求的都是通过一个单独的 Goroutine 进行处
 
 
 
-### 接口
+#### 接口
 
 `Context` 其实是 Go 语言 `context` 包对外暴露的接口，该接口定义了四个需要实现的方法，其中包括：
 
@@ -6012,7 +6319,7 @@ type Context interface {
 
 `context` 包中提供的 `Background`、`TODO`、`WithDeadline` 等方法就会返回实现该接口的私有结构体的，我们会在后面的小节中详细介绍它们的工作原理。
 
-### 示例
+#### 示例
 
 我们可以通过一个例子简单了解一下 `Context` 是如何对信号进行同步的，在这段代码中我们创建了一个过期时间为 `1s` 的上下文，并将上下文传入 `handle` 方法，该方法会使用 `500ms` 的时间处理该『请求』：
 
@@ -6035,6 +6342,272 @@ func handle(ctx context.Context, duration time.Duration) {
     }
 }
 ```
+
+所以我们有足够的时间处理该『请求』，而运行上述代码时会打印出如下所示的内容：
+
+```bash
+$ go run context.go
+process request with 500ms
+main context deadline exceeded
+```
+
+『请求』被 Goroutine 正常处理没有进入超时的 `select` 分支，但是在 `main` 函数中的 `select` 却会等待 `Context` 的超时最终打印出 `main context deadline exceeded`，如果我们将处理『请求』的时间改成 `1500ms`，当前处理的过程就会因为 `Context` 到截止日期而被中止：
+
+```
+$ go run context.go
+main context deadline exceeded
+handle context deadline exceeded
+```
+
+两个函数都会因为 `ctx.Done()` 返回的管道被关闭而中止，也就是上下文超时。
+
+相信这两个例子能够帮助各位读者了解 `Context` 的使用方法以及基本的工作原理 — 多个 Goroutine 同时订阅 `ctx.Done()` 管道中的消息，一旦接收到取消信号就停止当前正在执行的工作并提前返回。
+
+
+
+### 实现原理
+
+`Context` 相关的源代码都在 [context.go](https://golang.org/src/context/context.go) 这个文件中，在这一节中我们就会从 Go 语言的源代码出发介绍 `Context` 的实现原理，包括如何在多个 Goroutine 之间同步信号、为请求设置截止日期并传递参数和信息。
+
+#### 默认上下文
+
+在 `context` 包中，最常使用其实还是 `context.Background` 和 `context.TODO` 两个方法，这两个方法最终都会返回一个预先初始化好的私有变量 `background` 和 `todo`：
+
+```
+func Background() Context {
+    return background
+}
+func TODO() Context {
+    return todo
+}
+```
+
+这两个变量是在包初始化时就被创建好的，它们都是通过 `new(emptyCtx)` 表达式初始化的指向私有结构体 `emptyCtx` 的指针，这是包中最简单也是最常用的类型：
+
+```
+type emptyCtx int
+func (*emptyCtx) Deadline() (deadline time.Time, ok bool) {
+    return
+}
+func (*emptyCtx) Done() <-chan struct{} {
+    return nil
+}
+func (*emptyCtx) Err() error {
+    return nil
+}
+func (*emptyCtx) Value(key interface{}) interface{} {
+    return nil
+}
+```
+
+它对 `Context` 接口方法的实现也都非常简单，无论何时调用都会返回 `nil` 或者空值，并没有任何特殊的功能，`Background` 和 `TODO` 方法在某种层面上看其实也只是互为别名，两者没有太大的差别，不过 `context.Background()` 是上下文中最顶层的默认值，所有其他的上下文都应该从 `context.Background()` 演化出来。
+
+![golang-context-hierarchy](go语言设计与实现.assets/996763ae96329802badedc359870af2a.png)
+
+我们应该只在不确定时使用 `context.TODO()`，在多数情况下如果函数没有上下文作为入参，我们往往都会使用 `context.Background()` 作为起始的 `Context` 向下传递。
+
+
+
+#### 取消信号
+
+`WithCancel` 方法能够从 `Context` 中创建出一个新的子上下文，同时还会返回用于取消该上下文的函数，也就是 `CancelFunc`，我们直接从 `WithCancel` 函数的实现来看它到底做了什么：
+
+```
+func WithCancel(parent Context) (ctx Context, cancel CancelFunc) {
+    c := newCancelCtx(parent)
+    propagateCancel(parent, &c)
+    return &c, func() { c.cancel(true, Canceled) }
+}
+```
+
+`newCancelCtx` 是包中的私有方法，它将传入的父上下文包到私有结构体 `cancelCtx{Context: parent}` 中，`cancelCtx` 就是当前函数最终会返回的结构体类型，我们在详细了解它是如何实现接口之前，先来了解一下用于传递取消信号的 `propagateCancel` 函数：
+
+```
+func propagateCancel(parent Context, child canceler) {
+    if parent.Done() == nil {
+        return // parent is never canceled
+    }
+    if p, ok := parentCancelCtx(parent); ok {
+        p.mu.Lock()
+        if p.err != nil {
+            child.cancel(false, p.err)
+        } else {
+            if p.children == nil {
+                p.children = make(map[canceler]struct{})
+            }
+            p.children[child] = struct{}{}
+        }
+        p.mu.Unlock()
+    } else {
+        go func() {
+            select {
+            case <-parent.Done():
+                child.cancel(false, parent.Err())
+            case <-child.Done():
+            }
+        }()
+    }
+}
+```
+
+该函数总共会处理与父上下文相关的三种不同的情况：
+
+- 当 `parent.Done() == nil`，也就是 `parent` 不会触发取消事件时，当前函数直接返回；
+- 当child的继承链上有parent是可以取消的上下文时，就会判断parent是否已经触发了取消信号；
+  - 如果已经被取消，当前 `child` 就会立刻被取消；
+  - 如果没有被取消，当前 `child` 就会被加入 `parent` 的 `children` 列表中，等待 `parent` 释放取消信号；
+- 遇到其他情况就会开启一个新的 Goroutine，同时监听 `parent.Done()` 和 `child.Done()` 两个管道并在前者结束后立刻调用 `child.cancel` 取消子上下文；这个函数的主要作用就是在 `parent` 和 `child` 之间同步取消和结束的信号，保证在 `parent` 被取消时，`child` 也会收到对应的信号，不会发生状态不一致的问题。
+
+`cancelCtx` 实现的几个接口方法其实没有太多值得介绍的地方，**该结构体最重要的方法其实是 `cancel` 方法，这个方法会关闭上下文的管道并向所有的子上下文发送取消信号**：
+
+```go
+func (c *cancelCtx) cancel(removeFromParent bool, err error) {
+    c.mu.Lock()
+    if c.err != nil {
+        c.mu.Unlock()
+        return
+    }
+    c.err = err
+    if c.done == nil {
+        c.done = closedchan
+    } else {
+        close(c.done)
+    }
+    for child := range c.children {
+        child.cancel(false, err)
+    }
+    c.children = nil
+    c.mu.Unlock()
+    if removeFromParent {
+        removeChild(c.Context, c)
+    }
+}
+```
+
+除了 `WithCancel` 之外，`context` 包中的另外两个函数 `WithDeadline` 和 `WithTimeout` 也都能创建可以被取消的上下文，`WithTimeout` 只是 `context` 包为我们提供的便利方法，能让我们更方便地创建 `timerCtx`
+
+```go
+func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc) {
+    return WithDeadline(parent, time.Now().Add(timeout))
+}
+func WithDeadline(parent Context, d time.Time) (Context, CancelFunc) {
+    if cur, ok := parent.Deadline(); ok && cur.Before(d) {
+        return WithCancel(parent)
+    }
+    c := &timerCtx{
+        cancelCtx: newCancelCtx(parent),
+        deadline:  d,
+    }
+    propagateCancel(parent, c)
+    dur := time.Until(d)
+    if dur <= 0 {
+        c.cancel(true, DeadlineExceeded) // deadline has already passed
+        return c, func() { c.cancel(false, Canceled) }
+    }
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    if c.err == nil {
+        c.timer = time.AfterFunc(dur, func() {
+            c.cancel(true, DeadlineExceeded)
+        })
+    }
+    return c, func() { c.cancel(true, Canceled) }
+}
+```
+
+`WithDeadline` 方法在创建 `timerCtx` 上下文的过程中，判断了上下文的截止日期与当前日期，并通过 `time.AfterFunc` 方法创建了定时器，当时间超过了截止日期之后就会调用 `cancel` 方法同步取消信号。
+
+`timerCtx` 结构体内部嵌入了一个 `cancelCtx` 结构体，也『继承』了相关的变量和方法，除此之外，持有的定时器和 `timer` 和截止时间 `deadline` 也实现了定时取消这一功能：
+
+```go
+type timerCtx struct {
+    cancelCtx
+    timer *time.Timer // Under cancelCtx.mu.
+    deadline time.Time
+}
+func (c *timerCtx) Deadline() (deadline time.Time, ok bool) {
+    return c.deadline, true
+}
+func (c *timerCtx) cancel(removeFromParent bool, err error) {
+    c.cancelCtx.cancel(false, err)
+    if removeFromParent {
+        removeChild(c.cancelCtx.Context, c)
+    }
+    c.mu.Lock()
+    if c.timer != nil {
+        c.timer.Stop()
+        c.timer = nil
+    }
+    c.mu.Unlock()
+}
+```
+
+`cancel` 方法不仅调用了内部嵌入的 `cancelCtx.cancel`，还会停止持有的定时器减少不必要的资源浪费。
+
+
+
+#### 传值方法 withValue
+
+在最后我们需要了解一下如何使用上下文传值，`context` 包中的 `WithValue` 函数能从父上下文中创建一个子上下文，传值的子上下文使用私有结构体 `valueCtx` 类型：
+
+```go
+func WithValue(parent Context, key, val interface{}) Context {
+    if key == nil {
+        panic("nil key")
+    }
+    if !reflectlite.TypeOf(key).Comparable() {
+        panic("key is not comparable")
+    }
+    return &valueCtx{parent, key, val}
+}
+```
+
+`valueCtx` 函数会将除了 `Value` 之外的 `Err`、`Deadline` 等方法代理到父上下文中，只会处理 `Value` 方法的调用，然而每一个 `valueCtx` 内部也并没有存储一个键值对的哈希，而是只包含一个键值对：
+
+```go
+type valueCtx struct {
+    Context
+    key, val interface{}
+}
+func (c *valueCtx) Value(key interface{}) interface{} {
+    if c.key == key {
+        return c.val
+    }
+    return c.Context.Value(key)
+}
+```
+
+如果当前 `valueCtx` 中存储的键与 `Value` 方法中传入的不匹配，就会从父上下文中查找该键对应的值直到在某个父上下文中返回 `nil` 或者查找到对应的值。
+
+
+
+## 总结
+
+Go 语言中的 `Context` 的**主要作用还是在多个 Goroutine 或者模块之间同步取消信号或者截止日期，用于减少对资源的消耗和长时间占用，避免资源浪费**，虽然**传值也是它的功能之一，但是这个功能我们还是很少用到**。
+
+在真正使用传值的功能时我们也应该非常谨慎，**不能将请求的所有参数都使用 `Context` 进行传递，这是一种非常差的设计，比较常见的使用场景是传递请求对应用户的认证令牌以及用于进行分布式追踪的请求 ID**。
+
+## Reference
+
+- [Package context · Golang](https://golang.org/pkg/context/)
+- [Go Concurrency Patterns: Context](https://blog.golang.org/context)
+- [Using context cancellation in Go](https://www.sohamkamani.com/blog/golang/2018-06-17-golang-using-context-cancellation/)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
