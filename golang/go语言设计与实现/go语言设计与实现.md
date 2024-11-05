@@ -6111,11 +6111,331 @@ TEXT runtime·jmpdefer(SB), NOSPLIT, $0-8
 
 我们在本节前面提到的两个现象在这里也可以解释清楚了：
 
+- 后调用的defer函数会先执行：
+  - 后调用的 `defer` 函数会被追加到 Goroutine `_defer` 链表的最前面；
+  - 运行 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 时是从前到后依次执行；
+- 函数的参数会被预先计算；
+  - 调用 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 函数创建新的延迟调用时就会立刻拷贝函数的参数，函数的参数不会等到真正执行时计算；
 
 
 
+## 5.4 panic 和 recover
 
-- [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
+> [5.4 panic 和 recover](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md)
+
+本节将分析两个经常成对出现的关键字 `panic` 和 `recover`。这两个关键字都与 `defer` 有千丝万缕的联系，也都是 Go 语言中的内置函数，但是提供的功能却是互补的：
+
+- `panic` 能够改变程序的控制流，函数调用`panic` 时会立刻停止执行函数的其他代码，并在执行结束后在当前 Goroutine 中递归执行调用方的延迟函数调用 `defer`；
+- `recover` 可以中止 `panic` 造成的程序崩溃。它是一个只能在 `defer` 中发挥作用的函数，在其他作用域中调用不会发挥任何作用；
+
+![golang-panic](go语言设计与实现.assets/5d892e850800f100fa788c91b70a2f40.png)
+
+**图 5-12 panic 触发的递归延迟调用**
+
+Andrew Gerrand 写过的一篇名为 [Defer, Panic, and Recover](https://blog.golang.org/defer-panic-and-recover) 的博客很好地介绍了这三个关键字的不同作用以及它们的关系[1](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fn:1)。
+
+### 5.4.1 现象
+
+我们先通过几个例子了解一下使用 `panic` 和 `recover` 关键字时遇到的一些现象，部分现象也与上一节分析的 `defer` 关键字有关：
+
+- `panic` 只会触发当前 Goroutine 的延迟函数调用；
+- `recover` 只有在 `defer` 函数中调用才会生效；
+- `panic` 允许在 `defer` 中嵌套多次调用；
+
+#### 跨协程失效
+
+首先要展示的例子就是 `panic` 只会触发当前 Goroutine 的延迟函数调用。这里有一段简单的代码：
+
+```go
+func main() {
+    defer println("in main")
+    go func() {
+        defer println("in goroutine")
+        panic("")
+    }()
+    time.Sleep(1 * time.Second)
+}
+$ go run main.go
+in goroutine
+panic:
+
+goroutine 17 [running]:
+main.main.func1()
+	/xxxxx/go_test/test.go:39 +0x45
+created by main.main
+	/xxxx/go_test/test.go:37 +0x3c
+```
+
+当我们运行这段代码时会发现 `main` 函数中的 `defer` 语句并没有执行，执行的只有当前 Goroutine 中的 `defer`。
+
+上一节我们曾经介绍过 `defer` 关键字对应的 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 会将延迟调用函数与调用方所在 Goroutine 进行关联。所以当程序发生崩溃时只会调用当前 Goroutine 的延迟调用函数也是非常合理的。
+
+![golang-panic-and-defers](go语言设计与实现.assets/948d3fa4c62cf6c9b1c369375bc18221.png)
+
+**图 5-13 panic 触发当前 Goroutine 的延迟调用**
+
+如上图所示，多个 Goroutine 之间没有太多的关联，一个 Goroutine 在 `panic` 时也不应该执行其他 Goroutine 的延迟函数。
+
+
+
+#### 失效的崩溃恢复
+
+初学 Go 语言的读者可能会写出下面的代码，在主程序中调用 `recover` 试图中止程序的崩溃，但是从运行的结果中我们也能看出，如下所示的程序依然没有正常退出。
+
+```go
+func main() {
+    defer fmt.Println("in main")
+    if err := recover(); err != nil {
+        fmt.Println(err)
+    }
+    panic("unknown err")
+}
+$ go run main.go
+in main
+panic: unknown err
+goroutine 1 [running]:
+main.main()
+    ...
+exit status 2
+```
+
+仔细分析一下这个过程就能理解这种现象背后的原因，`recover` 只有在发生 `panic` 之后调用才会生效。然而在上面的控制流中，`recover` 是在 `panic` 之前调用的，并不满足生效的条件，所以我们需要在 `defer` 中使用 `recover` 关键字。
+
+```go
+func main() {
+	defer func() {
+		fmt.Println("in main")
+		if err := recover(); err != nil {
+			fmt.Println("here", err)
+		}
+	}()
+	panic("unknown err")
+}
+
+==>
+in main
+here unknown err
+
+```
+
+#### 嵌套崩溃
+
+Go 语言中的 `panic` 是可以多次嵌套调用的。一些熟悉 Go 语言的读者很可能也不知道这个知识点，如下所示的代码就展示了如何在 `defer` 函数中多次调用 `panic`：
+
+```go
+func main() {
+    defer fmt.Println("in main")
+    defer func() {
+        defer func() {
+            panic("panic again and again")
+        }()
+        panic("panic again")
+    }()
+    panic("panic once")
+}
+$ go run main.go
+in main
+panic: panic once
+    panic: panic again
+    panic: panic again and again
+goroutine 1 [running]:
+...
+exit status 2
+```
+
+从上述程序的输出，**我们可以确定程序多次调用 `panic` 也不会影响 `defer` 函数的正常执行。所以使用 `defer` 进行收尾的工作一般来说都是安全的**。
+
+### 5.4.2 数据结构
+
+`panic` 关键字在 Go 语言的源代码是由数据结构 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 表示的。每当我们调用 `panic` 都会创建一个如下所示的数据结构存储相关信息：
+
+```
+type _panic struct {
+    argp      unsafe.Pointer
+    arg       interface{}
+    link      *_panic
+    recovered bool
+    aborted   bool
+    pc        uintptr
+    sp        unsafe.Pointer
+    goexit    bool
+}
+```
+
+- `argp` 是指向 `defer` 调用时参数的指针；
+- `arg` 是调用 `panic` 时传入的参数；
+- `link` 指向了更早调用的 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 结构；
+- `recovered` 表示当前 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 是否被 `recover` 恢复；
+- `aborted` 表示当前的 `panic` 是否被强行终止；从数据结构中的 `link` 字段我们就可以推测出以下的结论 — `panic` 函数可以被连续多次调用，它们之间通过 `link` 的关联形成一个链表。
+
+结构体中的 `pc`、`sp` 和 `goexit` 三个字段都是为了修复 [`runtime.Goexit`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L581-L656) 的问题引入的[2](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fn:2)。该函数能够只结束调用该函数的 Goroutine 而不影响其他的 Goroutine，但是该函数会被 `defer` 中的 `panic` 和 `recover` 取消[3](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fn:3)，引入这三个字段的目的就是为了解决这个问题。
+
+### 5.4.3 程序崩溃
+
+首先了解一下 `panic` 函数是如何终止程序的。编译器会将关键字 `panic` 转换成 [`runtime.gopanic`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L887-L1062)，该函数的执行过程包含以下几个步骤：
+
+- 创建新的 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 结构并添加到所在 Goroutine `_panic` 链表的最前面；
+- 在循环中不断从当前 Goroutine 的 `_defer` 中链表获取 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 并调用 [`runtime.reflectcall`](https://github.com/golang/go/blob/a38a917aee626a9b9d5ce2b93964f586bf759ea0/src/runtime/asm_386.s#L496-L526) 运行延迟调用函数；
+- 调用 [`runtime.fatalpanic`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1185-L1220) 中止整个程序；
+
+```
+func gopanic(e interface{}) {
+    gp := getg()
+    ...
+    var p _panic
+    p.arg = e
+    p.link = gp._panic
+    gp._panic = (*_panic)(noescape(unsafe.Pointer(&p)))
+    for {
+        d := gp._defer
+        if d == nil {
+            break
+        }
+        d._panic = (*_panic)(noescape(unsafe.Pointer(&p)))
+        reflectcall(nil, unsafe.Pointer(d.fn), deferArgs(d), uint32(d.siz), uint32(d.siz))
+        d._panic = nil
+        d.fn = nil
+        gp._defer = d.link
+        freedefer(d)
+        if p.recovered {
+            ...
+        }
+    }
+    fatalpanic(gp._panic)
+    *(*int)(nil) = 0
+}
+```
+
+需要注意的是，我们在上述函数中省略了三部分比较重要的代码：
+
+- 恢复程序的 `recover` 分支中的代码；
+- 通过内联优化defer调用性能的代码4；
+  - [runtime: make defers low-cost through inline code and extra funcdata](https://github.com/golang/go/commit/be64a19d99918c843f8555aad580221207ea35bc)
+- 修复`runtime.Goexit`异常情况的代码；
+  - [runtime: ensure that Goexit cannot be aborted by a recursive panic/recover](https://github.com/golang/go/commit/7dcd343ed641d3b70c09153d3b041ca3fe83b25e)[`runtime.fatalpanic`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1185-L1220) 实现了无法被恢复的程序崩溃，它在中止程序之前会通过 [`runtime.printpanics`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L679-L695) 打印出全部的 `panic` 消息以及调用时传入的参数：
+
+```
+func fatalpanic(msgs *_panic) {
+    pc := getcallerpc()
+    sp := getcallersp()
+    gp := getg()
+    if startpanic_m() && msgs != nil {
+        atomic.Xadd(&runningPanicDefers, -1)
+        printpanics(msgs)
+    }
+    if dopanic_m(gp, pc, sp) {
+        crash()
+    }
+    exit(2)
+}
+```
+
+打印 `panic` 消息之后会通过 [`runtime.exit`](https://github.com/golang/go/blob/cbaa666682386fe5350bf87d7d70171704c90fe4/src/runtime/sys_darwin.go#L231-L233) 退出当前程序并返回错误码 2，而程序的正常退出也是通过 [`runtime.exit`](https://github.com/golang/go/blob/cbaa666682386fe5350bf87d7d70171704c90fe4/src/runtime/sys_darwin.go#L231-L233) 函数实现的。
+
+### 5.4.4 崩溃恢复
+
+到这里我们已经掌握了 `panic` 退出程序的过程，接下来将分析 `defer` 中的 `recover` 是如何中止程序崩溃的。编译器会将关键字 `recover` 转换成 [`runtime.gorecover`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1080-L1094)：
+
+```go
+func gorecover(argp uintptr) interface{} {
+    p := gp._panic
+    if p != nil && !p.recovered && argp == uintptr(p.argp) {
+        p.recovered = true
+        return p.arg
+    }
+    return nil
+}
+```
+
+这个函数的实现非常简单，如果当前 Goroutine 没有调用 `panic`，那么该函数会直接返回 `nil`，这也是崩溃恢复在非 `defer` 中调用会失效的原因。
+
+在正常情况下，它会修改 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 结构体的 `recovered` 字段，[`runtime.gorecover`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1080-L1094) 函数本身不包含恢复程序的逻辑，程序的恢复也是由 [`runtime.gopanic`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L887-L1062) 函数负责的：
+
+```go
+func gopanic(e interface{}) {
+    ...
+    for {
+        // 执行延迟调用函数，可能会设置 p.recovered = true
+        ...
+        pc := d.pc
+        sp := unsafe.Pointer(d.sp)
+        ...
+        if p.recovered {
+            gp._panic = p.link
+            for gp._panic != nil && gp._panic.aborted {
+                gp._panic = gp._panic.link
+            }
+            if gp._panic == nil {
+                gp.sig = 0
+            }
+            gp.sigcode0 = uintptr(sp)
+            gp.sigcode1 = pc
+            mcall(recovery)
+            throw("recovery failed")
+        }
+    }
+    ...
+}
+```
+
+上述这段代码也省略了 `defer` 的内联优化，它从 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体中取出了程序计数器 `pc` 和栈指针 `sp` 并调用 [`runtime.recovery`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1132-L1151) 函数触发 Goroutine 的调度，调度之前会准备好 `sp`、`pc` 以及函数的返回值：
+
+```
+func recovery(gp *g) {
+    sp := gp.sigcode0
+    pc := gp.sigcode1
+    gp.sched.sp = sp
+    gp.sched.pc = pc
+    gp.sched.lr = 0
+    gp.sched.ret = 1
+    gogo(&gp.sched)
+}
+```
+
+当我们在调用 `defer` 关键字时，调用时的栈指针 `sp` 和程序计数器 `pc` 就已经存储到了 [`runtime._defer`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L853-L878) 结构体中，这里的 [`runtime.gogo`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/asm_386.s#L301-L314) 函数会跳回 `defer` 关键字调用的位置。
+
+[`runtime.recovery`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1132-L1151) 在调度过程中会将函数的返回值设置成 1。从 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 的注释中我们会发现，当 [`runtime.deferproc`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L218-L258) 函数的返回值是 1 时，编译器生成的代码会直接跳转到调用方函数返回之前并执行 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571)：
+
+```
+func deferproc(siz int32, fn *funcval) {
+    ...
+    // deferproc returns 0 normally.
+    // a deferred func that stops a panic
+    // makes the deferproc return 1.
+    // the code the compiler generates always
+    // checks the return value and jumps to the
+    // end of the function if deferproc returns != 0.
+    return0()
+}
+```
+
+跳转到 [`runtime.deferreturn`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L526-L571) 函数之后，程序就已经从 `panic` 中恢复了并执行正常的逻辑，而 [`runtime.gorecover`](https://github.com/golang/go/blob/22d28a24c8b0d99f2ad6da5fe680fa3cfa216651/src/runtime/panic.go#L1080-L1094) 函数也能从 [`runtime._panic`](https://github.com/golang/go/blob/cfe3cd903f018dec3cb5997d53b1744df4e53909/src/runtime/runtime2.go#L891-L900) 结构体中取出了调用 `panic` 时传入的 `arg` 参数并返回给调用方。
+
+
+
+## 5.4.5 小结
+
+分析程序的崩溃和恢复过程比较棘手，代码不是特别容易理解。我们在本节的最后还是简单总结一下程序崩溃和恢复的过程：
+
+- 编译器会负责做转换关键字的工作；
+  - 将 `panic` 和 `recover` 分别转换成 `runtime.gopanic` 和 `runtime.gorecover`；
+  - 将 `defer` 转换成 `deferproc` 函数；
+  - 在调用 `defer` 的函数末尾调用 `deferreturn` 函数；
+- 在运行过程中遇到 `gopanic` 方法时，会从 Goroutine 的链表依次取出 `_defer` 结构体并执行；
+- 如果调用延迟执行函数时遇到了`gorecover`就会将`_panic.recovered`标记成true并返回panic的参数；
+  - 在这次调用结束之后，`gopanic` 会从 `_defer` 结构体中取出程序计数器 `pc` 和栈指针 `sp` 并调用 `recovery` 函数进行恢复程序；
+  - `recovery` 会根据传入的 `pc` 和 `sp` 跳转回 `deferproc`；
+  - 编译器自动生成的代码会发现 `deferproc` 的返回值不为 0，这时会跳回 `deferreturn` 并恢复到正常的执行流程；
+- 如果没有遇到 `gorecover` 就会依次遍历所有的 `_defer` 结构，并在最后调用 `fatalpanic` 中止程序、打印 `panic` 的参数并返回错误码 `2`；分析的过程涉及了很多语言底层的知识，源代码阅读起来也比较晦涩，其中充斥着反常规的控制流程，通过程序计数器来回跳转，不过对于我们理解程序的执行流程还是很有帮助。
+
+------
+
+- Andrew Gerrand. 4 August 2010. Defer, Panic, and Recover - The Go Blog. https://blog.golang.org/defer-panic-and-recover[↩︎](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fnref:1)
+- Dan Scales. Oct 10, 2019. runtime: ensure that Goexit cannot be aborted by a recursive panic/recover https://github.com/golang/go/commit/7dcd343ed641d3b70c09153d3b041ca3fe83b25e[↩︎](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fnref:2)
+- runtime: panic + recover can cancel a call to Goexit #29226 https://github.com/golang/go/issues/29226[↩︎](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fnref:3)
+- Dan Scales. Jun 25, 2019. cmd/compile, cmd/link, runtime: make defers low-cost through inline code and extra funcdata https://github.com/golang/go/commit/be64a19d99918c843f8555aad580221207ea35bc[↩︎](https://www.bookstack.cn/read/draveness-golang/ada6c076f55fa1aa.md#fnref:4)
+
+
 
 ## 5.5 make 和 new
 
