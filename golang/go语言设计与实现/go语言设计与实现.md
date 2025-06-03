@@ -5168,7 +5168,9 @@ for ; hb != false; hv1, hb = <-ha {
 
 > [5.2 select](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md)
 
-很多 C 语言或者 Unix 开发者听到 `select` 想到的都是系统调用，而谈到 I/O 模型时最终大都会提到基于 `select`、`poll` 和 `epoll` 等函数构建的 IO 多路复用模型。Go 语言的 `select` 与 C 语言中的 `select` 有着比较相似的功能。本节会介绍 Go 语言 `select` 常见的现象、数据结构以及四种不同情况下的实现原理。
+很多 C 语言或者 Unix 开发者听到 `select` 想到的都是系统调用，而谈到 I/O 模型时最终大都会提到基于 `select`、`poll` 和 `epoll` 等函数构建的 IO 多路复用模型。
+
+Go 语言的 `select` 与 C 语言中的 `select` 有着比较相似的功能。本节会介绍 Go 语言 `select` 常见的现象、数据结构以及四种不同情况下的实现原理。
 
 C 语言中的 `select` 关键字可以同时监听多个文件描述符的可读或者可写的状态，**Go 语言中的 `select` 关键字也能够让 Goroutine 同时等待多个 Channel 的可读或者可写，在多个文件或者 Channel 发生状态改变之前，`select` 会一直阻塞当前线程或者 Goroutine**。
 
@@ -5191,6 +5193,22 @@ func fibonacci(c, quit chan int) {
         }
     }
 }
+
+func main() {
+	c := make(chan int)
+	quit := make(chan int)
+
+	// 启动 Fibonacci 协程
+	go fibonacci(c, quit)
+
+	// 从通道 c 中接收 Fibonacci 数列并打印
+	for i := 0; i < 10; i++ {
+		fmt.Println(<-c)
+	}
+	// 发送信号给 quit 通道，结束 Fibonacci 协程
+	quit <- 0
+
+}
 ```
 
 上述控制结构会等待 `c <- x` 或者 `<-quit` 两个表达式中任意一个的返回。无论哪一个表达式返回都会立刻执行 `case` 中的代码，当 `select` 中的两个 `case` 同时被触发时，就会随机选择一个 `case` 执行。
@@ -5204,7 +5222,7 @@ func fibonacci(c, quit chan int) {
 - `select` 能在 Channel 上进行非阻塞的收发操作；
 - `select` 在**遇到多个 Channel 同时响应时会随机挑选 `case` 执行**；这两个现象是学习 `select` 时经常会遇到的，我们来深入了解具体的场景并分析这两个现象背后的设计原理。
 
-#### 非阻塞的收发
+#### 非阻塞的收发（default）
 
 在通常情况下，`select` 语句会阻塞当前 Goroutine 并等待多个 Channel 中的一个达到可以收发的状态。但是如果 `select` 控制结构中**包含 `default` 语句**，那么这个 `select` 语句在执行时会遇到以下两种情况：
 
@@ -5227,7 +5245,9 @@ default
 
 只要我们稍微想一下，就会发现 Go 语言设计的这个现象就非常合理。`select` 的作用就是同时监听多个 `case` 是否可以执行，如果多个 Channel 都不能执行，那么运行 `default` 中的代码也是理所当然的。
 
-非阻塞的 Channel 发送和接收操作还是很有必要的，在很多场景下我们不希望向 Channel 发送消息或者从 Channel 中接收消息会阻塞当前 Goroutine，**我们只是想看看 Channel 的可读或者可写状态**。下面就是一个常见的例子：
+非阻塞的 Channel 发送和接收操作还是很有必要的，
+
+在很多场景下我们不希望向 Channel 发送消息或者从 Channel 中接收消息会阻塞当前 Goroutine，**我们只是想看看 Channel 的可读或者可写状态**。下面就是一个常见的例子：
 
 ```go
 errCh := make(chan error, len(tasks)
@@ -5252,18 +5272,12 @@ default:
 
 > 有错误时才返回
 
-
-
 在上面这段代码中，我们不关心到底多少个任务执行失败了，只关心是否存在返回错误的任务，最后的 `select` 语句就能很好地完成这个任务。然而使用 `select` 的语法不是最原始的设计，它在最初版本使用 `x, ok := <-c` 的语法实现非阻塞的收发，以下是与非阻塞收发的相关提交：
 
 - [select default](https://github.com/golang/go/commit/79fbbe37a76502e6f5f9647d2d82bab953ab1546#diff-fb0a5ae9dd70f0a43038d55c0204fdff) 提交支持了 `select` 语句中的 `default` 情况[1](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md#fn:1)；
 - [gc: special case code for single-op blocking and non-blocking selects](https://github.com/golang/go/commit/5038792837355abde32f2e9549ef132fc5ffbd16) 提交引入了基于 `select` 的非阻塞收发的特性[2](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md#fn:2)。
 - [gc: remove non-blocking send, receive syntax](https://github.com/golang/go/commit/cb584707af2d8803adba88fd9692e665ecd2f059) 提交将 `x, ok := <-c` 语法删除删除[3](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md#fn:3)；
-- [gc, runtime: replace closed(c) with x, ok := <-c](https://github.com/golang/go/commit/8bf34e335686816f7fe7e28614b2c7a3e04e9e7c) 提交使用 `x, ok := <-c` 语法替代 `closed(c)` 语法判断 Channel 的关闭状态[4](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md#fn:4)；我们可以从上面的几个提交中看到非阻塞收发从最初到现在的演变。
-
-
-
-
+- [gc, runtime: replace closed(c) with x, ok := <-c](https://github.com/golang/go/commit/8bf34e335686816f7fe7e28614b2c7a3e04e9e7c) 提交使用 `x, ok := <-c` 语法替代 `closed(c)` 语法判断 Channel 的关闭状态[4](https://www.bookstack.cn/read/draveness-golang/1a4f7a284cd2b279.md#fn:4)；我们可以从上面的几个提交中看到非阻塞收发从最初到现在的演变
 
 
 
@@ -5305,7 +5319,7 @@ case1
 
 `select` 在 Go 语言的源代码中不存在对应的结构体，但是 `select` 控制结构中的 `case` 却使用 [`runtime.scase`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/select.go#L28-L34) 结构体来表示：
 
-```
+```go
 type scase struct {
     c           *hchan
     elem        unsafe.Pointer
@@ -5317,7 +5331,7 @@ type scase struct {
 
 因为非默认的 `case` 中都与 Channel 的发送和接收有关，所以 [`runtime.scase`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/select.go#L28-L34) 结构体中也包含一个 [`runtime.hchan`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L32-L51) 类型的字段存储 `case` 中使用的 Channel；除此之外，`elem` 是接收或者发送数据的变量地址、`kind` 表示 [`runtime.scase`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/select.go#L28-L34) 的种类，总共包含以下四种：
 
-```
+```go
 const (
     caseNil = iota
     caseRecv
@@ -5330,7 +5344,7 @@ const (
 
 
 
-### 5.2.3 实现原理
+### 5.2.3 实现原理（代码转换）
 
 `select` 语句在编译期间会被转换成 `OSELECT` 节点。每一个 `OSELECT` 节点都会持有一组 `OCASE` 节点，如果 `OCASE` 的执行条件是空，那就意味着这是一个 `default` 节点:
 
@@ -5437,6 +5451,8 @@ case ch <- i:
 default:
     ...
 }
+
+==》
 if selectnbsend(ch, i) {
     ...
 } else {
@@ -5478,7 +5494,7 @@ if selectnbrecv(&v, ch) { // if selectnbrecv2(&v, &ok, ch) {
 
 返回值数量不同会导致使用函数的不同，两个用于非阻塞接收消息的函数 [`runtime.selectnbrecv`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L683-L686) 和 [`runtime.selectnbrecv2`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L705-L709) 只是对 [`runtime.chanrecv`](https://github.com/golang/go/blob/d1969015b4ac29be4f518b94817d3f525380639d/src/runtime/chan.go#L448-L579) 返回值的处理稍有不同：
 
-```
+```go
 func selectnbrecv(elem unsafe.Pointer, c *hchan) (selected bool) {
     selected, _ = chanrecv(c, elem, false)
     return
@@ -6597,7 +6613,7 @@ func newobject(typ *_type) unsafe.Pointer {
 
 > [6.1 上下文 Context](https://www.bookstack.cn/read/draveness-golang/6ee8389651c21ac5.md)
 
-`Context` 是 Golang 中非常有趣的设计，它与 Go 语言中的并发编程有着比较密切的关系，在其他语言中我们很难见到类似 `Context` 的东西，它不仅能够用来设置截止日期、同步『信号』还能用来传递请求相关的值。
+`Context` 是 Golang 中非常有趣的设计，它与 Go 语言中的并发编程有着比较密切的关系，在其他语言中我们很难见到类似 `Context` 的东西，它不仅能够用来**设置截止日期**、**同步『信号』**还能用来**传递请求相关的值**。
 
 这一节就会介绍 Go 语言中这个非常常见的 `Context` 接口，我们将从这里开始了解 Go 语言并发编程的设计理念以及实现原理。
 
@@ -6616,7 +6632,7 @@ Go 语言中的每一个请求的都是通过一个单独的 Goroutine 进行处
 
 ![golang-with-context](go语言设计与实现.assets/16668310ee366c684edf21dc7fae3924.png)
 
-这其实就是 Golang 中上下文的最大作用，在不同 Goroutine 之间对信号进行同步避免对计算资源的浪费，与此同时 `Context` 还能携带以请求为作用域的键值对信息。
+这其实就是 Golang 中上下文的**最大作用，在不同 Goroutine 之间对信号进行同步避免对计算资源的浪费**，与此同时 `Context` 还能携带以请求为作用域的键值对信息。
 
 
 
@@ -6624,7 +6640,7 @@ Go 语言中的每一个请求的都是通过一个单独的 Goroutine 进行处
 
 `Context` 其实是 Go 语言 `context` 包对外暴露的接口，该接口定义了四个需要实现的方法，其中包括：
 
-- `Deadline` 方法需要返回当前 `Context` 被取消的时间，也就是完成工作的截止日期；
+- `Deadline` 方法需要返回当前 `Context` 被取消的时间，也就是**完成工作的截止日期**；
 - `Done` 方法需要**返回一个 Channel**，这个 Channel 会在当前工作完成或者上下文被取消之后关闭，多次调用 `Done` 方法会返回同一个 Channel；
 - Err 方法会返回当前Context结束的原因，它只会在Done返回的 Channel 被关闭时才会返回非空的值；
   - 如果当前 `Context` 被取消就会返回 `Canceled` 错误；
@@ -6644,7 +6660,7 @@ type Context interface {
 
 #### 示例
 
-我们可以通过一个例子简单了解一下 `Context` 是如何对信号进行同步的，在这段代码中我们创建了一个过期时间为 `1s` 的上下文，并将上下文传入 `handle` 方法，该方法会使用 `500ms` 的时间处理该『请求』：
+我们可以通过一个例子简单了解一下 `Context` 是**如何对信号进行同步的**，在这段代码中我们创建了一个过期时间为 `1s` 的上下文，并将上下文传入 `handle` 方法，该方法会使用 `500ms` 的时间处理该『请求』：
 
 ```go
 func main() {
@@ -6678,13 +6694,15 @@ main context deadline exceeded
 
 ```
 $ go run context.go
-main context deadline exceeded
 handle context deadline exceeded
+main context deadline exceeded
+
+（无法确定子协程和main协程谁先接收到done信号）
 ```
 
 两个函数都会因为 `ctx.Done()` 返回的管道被关闭而中止，也就是上下文超时。
 
-相信这两个例子能够帮助各位读者了解 `Context` 的使用方法以及基本的工作原理 — 多个 Goroutine 同时订阅 `ctx.Done()` 管道中的消息，一旦接收到取消信号就停止当前正在执行的工作并提前返回。
+相信这两个例子能够帮助各位读者了解 `Context` 的使用方法以及基本的工作原理 --------- 多个 Goroutine 同时订阅 `ctx.Done()` 管道中的消息，一旦接收到取消信号就停止当前正在执行的工作并提前返回。
 
 
 
@@ -6692,7 +6710,7 @@ handle context deadline exceeded
 
 `Context` 相关的源代码都在 [context.go](https://golang.org/src/context/context.go) 这个文件中，在这一节中我们就会从 Go 语言的源代码出发介绍 `Context` 的实现原理，包括如何在多个 Goroutine 之间同步信号、为请求设置截止日期并传递参数和信息。
 
-#### 默认上下文
+#### 默认上下文（Background）
 
 在 `context` 包中，最常使用其实还是 `context.Background` 和 `context.TODO` 两个方法，这两个方法最终都会返回一个预先初始化好的私有变量 `background` 和 `todo`：
 
@@ -6707,7 +6725,7 @@ func TODO() Context {
 
 这两个变量是在包初始化时就被创建好的，它们都是通过 `new(emptyCtx)` 表达式初始化的指向私有结构体 `emptyCtx` 的指针，这是包中最简单也是最常用的类型：
 
-```
+```go
 type emptyCtx int
 func (*emptyCtx) Deadline() (deadline time.Time, ok bool) {
     return
@@ -6731,11 +6749,11 @@ func (*emptyCtx) Value(key interface{}) interface{} {
 
 
 
-#### 取消信号
+#### 取消信号（WithCancel）
 
 `WithCancel` 方法能够从 `Context` 中创建出一个新的子上下文，同时还会返回用于取消该上下文的函数，也就是 `CancelFunc`，我们直接从 `WithCancel` 函数的实现来看它到底做了什么：
 
-```
+```go
 func WithCancel(parent Context) (ctx Context, cancel CancelFunc) {
     c := newCancelCtx(parent)
     propagateCancel(parent, &c)
@@ -6745,7 +6763,7 @@ func WithCancel(parent Context) (ctx Context, cancel CancelFunc) {
 
 `newCancelCtx` 是包中的私有方法，它将传入的父上下文包到私有结构体 `cancelCtx{Context: parent}` 中，`cancelCtx` 就是当前函数最终会返回的结构体类型，我们在详细了解它是如何实现接口之前，先来了解一下用于传递取消信号的 `propagateCancel` 函数：
 
-```
+```go
 func propagateCancel(parent Context, child canceler) {
     if parent.Done() == nil {
         return // parent is never canceled
@@ -6840,6 +6858,34 @@ func WithDeadline(parent Context, d time.Time) (Context, CancelFunc) {
 
 `WithDeadline` 方法在创建 `timerCtx` 上下文的过程中，判断了上下文的截止日期与当前日期，并通过 `time.AfterFunc` 方法创建了定时器，当时间超过了截止日期之后就会调用 `cancel` 方法同步取消信号。
 
+使用示例：
+
+```go
+func main() {
+	// 创建一个截止时间为 5 秒后的上下文
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+	defer cancel()
+
+	// 模拟一个长时间运行的任务
+	go longRunningTask(ctx)
+
+	// 等待一段时间，模拟主程序运行
+	time.Sleep(10 * time.Second)
+}
+func longRunningTask(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		fmt.Println("Task canceled due to deadline exceeded")
+		return
+	case <-time.After(7 * time.Second):
+		fmt.Println("Task completed successfully")
+	}
+}
+
+```
+
+
+
 `timerCtx` 结构体内部嵌入了一个 `cancelCtx` 结构体，也『继承』了相关的变量和方法，除此之外，持有的定时器和 `timer` 和截止时间 `deadline` 也实现了定时取消这一功能：
 
 ```go
@@ -6902,13 +6948,53 @@ func (c *valueCtx) Value(key interface{}) interface{} {
 
 如果当前 `valueCtx` 中存储的键与 `Value` 方法中传入的不匹配，就会从父上下文中查找该键对应的值直到在某个父上下文中返回 `nil` 或者查找到对应的值。
 
+使用场景与例子：
+
+假设你有一个 HTTP 服务器，每个请求都需要一个唯一的请求 ID。你可以使用 `context.WithValue` 将请求 ID 存储在上下文中，以便在整个请求处理过程中访问和使用它。
+
+```go
+type key int
+
+const requestIDKey key = 0
+
+func main() {
+	http.HandleFunc("/hello", helloHandler)
+	http.ListenAndServe(":18080", nil)
+}
+
+func helloHandler(w http.ResponseWriter, r *http.Request) {
+	// 生成一个唯一的请求 ID
+	requestID := generateRequestID()
+
+	// 将请求 ID 存储在上下文中
+	ctx := context.WithValue(r.Context(), requestIDKey, requestID)
+
+	// 在处理函数中可以通过上下文获取请求 ID
+	greetUser(ctx, w)
+}
+
+func greetUser(ctx context.Context, w http.ResponseWriter) {
+	// 从上下文中获取请求 ID
+	requestID := ctx.Value(requestIDKey).(string)
+
+	// 使用请求 ID 打印欢迎消息
+	fmt.Fprintf(w, "Hello! Your request ID is: %s\n", requestID)
+}
+
+func generateRequestID() string {
+	// 这里可以实现生成唯一请求 ID 的逻辑
+	return "ABC123"
+}
+
+```
+
 
 
 ### 总结
 
 Go 语言中的 `Context` 的**主要作用还是在多个 Goroutine 或者模块之间同步取消信号或者截止日期，用于减少对资源的消耗和长时间占用，避免资源浪费**，虽然**传值也是它的功能之一，但是这个功能我们还是很少用到**。
 
-在真正使用传值的功能时我们也应该非常谨慎，**不能将请求的所有参数都使用 `Context` 进行传递，这是一种非常差的设计，比较常见的使用场景是传递请求对应用户的认证令牌以及用于进行分布式追踪的请求 ID**。
+在真正使用传值的功能时我们也应该非常谨慎，**不能将请求的所有参数都使用 `Context` 进行传递，这是一种非常差的设计，比较常见的使用场景是传递请求对应用户的认证令牌(token)以及用于进行分布式追踪的请求 ID(request-id)**。
 
 ### Reference
 
@@ -8128,6 +8214,60 @@ func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result
 
 - [6.3 定时器](https://www.bookstack.cn/read/draveness-golang/326bb5c45fbed045.md)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## 6.4 Channel
 
 - [6.4 Channel](https://www.bookstack.cn/read/draveness-golang/c666731d5f1a2820.md)
@@ -8147,6 +8287,14 @@ func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result
 ![Golang-Channel-Share-Memory](go语言设计与实现.assets/f9ed27afad45d2cb4ce29b113b40039a.png)
 
 Go 语言对于并发编程的设计与上述这种共享内存的方式完全不同，虽然我们在 Golang 中也能使用共享内存加互斥锁来实现并发编程，但是与此同时，Go 语言也提供了一种不同的并发模型，也就是 CSP，即通信顺序进程（Communicating sequential processes），Goroutine 其实就是 CSP 中的实体，Channel 就是用于传递信息的通道，使用 CSP 并发模型的 Goroutine 就会通过 Channel 来传递消息。
+
+
+
+
+
+
+
+
 
 
 
