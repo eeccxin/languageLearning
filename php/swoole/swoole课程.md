@@ -16,13 +16,305 @@ wiki：[Swoole 文档](https://wiki.swoole.com/#/server/setting?id=dispatch_mode
 
 # Swoole系列博客
 
-## **【Swoole系列2.2】Http、TCP、UDP服务端**
+> **微信文章地址：**https://mp.weixin.qq.com/s/ijBA7cXjjfxQ_oNazeRk1A
+>
+> **B站视频地址：**https://www.bilibili.com/video/BV1eD4y167Um
+>
+> **微信视频地址：**https://mp.weixin.qq.com/s/_pDmdBRd48oPdZMO2UtrDg
 
-### **http服务**
 
+
+
+
+## **【Swoole系列1】在Swoole的世界中，你将学习到什么？**
+
+> https://www.zyblog.com.cn/article/264
+
+在接下来的学习中，我们将要接触到的，将是 **PHP 扩展**中非常出名的一个高大上的框架，那就是 Swoole 。或许你已经在生产环境中使用过了，或许你只是看过官方文档写过几个例子，当然，更有可能你只是听过它的名字。
+
+不用太担心，通过我们的学习，你将会掌握到基本的 Swoole 开发知识，一些计算机操作系统以及网络的简单知识，以及**一个非常类似于 Laravel 的 Swoole 框架**。相信通过这些，你就可以尝试在自己的真实项目中使用 Swoole 来做一些项目，体验 PHP 最为人诟病的效率问题的超强解决方案。
+
+
+
+
+
+### Swoole
+
+我们先来看看 Swoole 是什么。
+
+> Swoole 使 PHP 开发人员可以编写**高性能高并发**的 TCP、UDP（传输层协议）、Unix Socket（套接字类型）、HTTP、 WebSocket（应用层协议） 等服务，让 PHP 不再局限于 Web 领域。Swoole4 协程的成熟将 PHP 带入了前所未有的时期， 为性能的提升提供了独一无二的可能性。Swoole 可以广泛应用于互联网、移动通信、云计算、 网络游戏、物联网（IOT）、车联网、智能家居等领域。使用 PHP + Swoole 可以使企业 IT 研发团队的效率大大提升，更加专注于开发创新产品。
+
+上面这段是官方网站首页上对于 Swoole 的说明。看着就感觉高大上吧？其实，TCP、UDP、Unix Socket、HTTP、 WebSocket 这些，我们普通 PHP 也能做到，但是，通常我们在进行普通的 Web 开发时，都会借助一个服务器应用，比如说 Apache 或者 Nginx 来配合 fastcgi 进行实现。而在 Swoole 中，只需要运行起 Swoole 服务就可以实现这些服务的挂载了。当然，我们还可以在外面套上 Nginx ，这样可以更方便地管理应用地址（域名）。
+
+此外，在官方描述中，**高性能**是一个关键词，究竟性能能提升到什么程度呢？我们后面将会有例子演示。
+
+<img src="swoole课程.assets/image-20250708120230211.png" alt="image-20250708120230211" style="zoom: 67%;" />
+
+
+
+<img src="swoole课程.assets/image-20250708120251644.png" alt="image-20250708120251644" style="zoom:67%;" />
+
+
+
+### 和传统 PHP 概念上的不同
+
+即使你没有做过 Java 或者 .NET（微软开发的**跨平台**、**开源**的开发者平台）、C/C++ 之类的开发，应该也多少听说过它们是需要编译之后生成一个运行文件后才能正式部署上线的。而我们传统的 PHP 貌似并没有这种情况，随时更新一个文件，丢到服务器上就可以运行。这个问题就要说到**静态和动态语言**的问题了。
+
+
+
+一般情况下，Java 这类的语言可以归结为静态语言，它们**有固定的变量类型**，必须编译后才能运行，特点是**一次加载会直接将代码加载到内存中**。
+
+典型的就像是我们电脑上的各种应用程序，直接执行一个程序的 .exe 文件，这个程序就在你的电脑上运行起来了。如果你用文本工具打开这种 exe 或者 Java 的 Jar 文件的话，看到的将是一堆乱码似的二进制内容。
+
+
+
+**而 PHP 这一类的，则可以归为动态语言，特点是变量不用指定类型，随便一个文件就可以直接运行**。
+
+相信你一定想到了，Python、JavaScript 都是这样的运行方式。即使 JS 的 npm 编译，实际上也只是对代码进行了混淆和格式化，并没有完全编译成一个类似于 jar 包那样的中间代码执行文件。
+
+
+
+对于这两种语言编译运行方式来说，静态语言将代码一次加载到内存，效率明显会提升不少，毕竟内存和硬盘的速度差距还是蛮大的。而且，静态语言会一次性将很多初始对象，类模板文件加载，调用的时候不用重新再加载实例化，性能就会有更进一步的上升空间。但是，静态语言通常都是需要编译成一个可执行的中间文件的，如果有代码的更新，则必须重启整个程序。
+
+
+
+好吧，动态语言的优缺点很明显就和静态语言是反过来的了。动态语言每一次运行一个脚本，就需要将所有相关的文件全部加载一次，而且如果没别的优化的话（比如 OPcache），所有的相关文件都要从硬盘读取、加载内存、实例化这些步骤中从头走一遍。
+
+可想而知，他的效率和性能是完全无法与静态语言相比的。但是，优点也很明确，随时修改一个文件就可以随时上线，线上业务不用中断。
+
+
+
+因此，PHP 通常会是创业公司的首选，因为它方便，更新迭代速度快，对线上业务影响小。
+
+但当公司发展到一定规模之后，却会因为效率性能的问题而容易被 Java、Golang 等语言代替。毕竟，一台服务器能够抗 5 台服务器的压力，成本还是能节省不少的，更主要的是，公司到一定规模之后，对于热更新、规范化上线等等相关的操作，也会让静态语言需要编译或重启服务这类问题成为边缘化的小问题。
+
+**性能效率往往才是中大型公司更重要的考虑**。
+
+
+
+上述内容只是基于我自己的理解，不代表完全正确，但是大方向应该是没有问题的。想必说到这里，**你也能猜到 Swoole 是如何来解决效率性能问题的。它就是通过直接将代码加载到内存的方式**，就像 Java 他们一样来启动一个进程，实现 PHP 代码的高性能执行。同时，尽量保持代码还是可以按照传统的方式来写，为我们 PHP 程序员提供了一个高性能的解决方案。
+
+
+
+## 教程框架
+
+这一次的系列教程同样是文章和视频形式，我们会分两个大的模块。
+
+
+
+第一个模块是以官方文档为基础，简单地学习了解 Swoole 框架中的各项内容，同时尽已所能的解释一些相关的计算机和网络知识。
+
+
+
+第二个模块就是一个我使用在生产环境中的 Swoole 框架 Hyperf 的相关配置使用。这个框架与 Laravel 非常类似，很好入手。如果你已经追过之前我们的 Laravel 系列，那么应该不会有太大难度。
+
+
+
+同样的，不会有太多的项目实战，毕竟这些东西讲得实在是太多了，随便一搜一大把。
+
+
+
+参考资料同样是以 Swoole 官方文档以及 Hyperf 官方文档为基础。官方文档永远是你学习的最重要参考资料，没有之一，包括我写的也只是对官方文档的扩展。
+
+
+
+最后，还有说明一下的是，Swoole 是我们国人开发的：**韩天峰** 大佬。文档全中文无压力，同样地，Hyperf 也是我们国人大佬开发的，一样的纯中文文档。感谢各位大佬们！
+
+
+
+## **【Swoole系列2.1】先把Swoole跑起来**
+
+> https://www.zyblog.com.cn/article/265
+
+在对 Swoole 有一个初步的印象之后，今天我们就来简单地搭建起 Swoole 环境并且运行起一个简单的 Http 服务。大家不用太有压力，今天的内容还没有太多理论方面的东西，一步步地一起把运行环境先准备好，能看到 Swoole 运行起来的效果就可以了。
+
+
+
+### 环境准备
+
+其实安装 Swoole 扩展并不麻烦，和其它的 PHP 扩展一样的安装过程就可以了。不过需要注意的是，Swoole 会和一些扩展产生冲突，比如说 XDebug、phptrace、aop、molten、xhprof、phalcon（协程无法运行在 phalcon 框架中）。
+
+
+
+大家一定会担心了，不能使用 XDebug ，我们的调试会很麻烦呀！没关系，**Swoole 也有它自己推荐的调试工具**，有兴趣的小伙伴可以自己查阅下相关资料。
+
+
+
+如果你是 Windows 环境，由于操作系统差异的问题，并没有直接的 dll 扩展包可以使用。所以在 Windows 环境下最好是建一个虚拟机，然后设置 PHPStrom 的同步就可以方便地进行开发了。这个配置我就不多说了，百度一搜一大堆。
+
+
+
+在这里，我也是通过虚拟机安装的，系统环境为 CentOS8、PHP8.1、Swoole4.8.3、MySQL8.0.27 都是最新的，如果你是 PHP7 以及 Swoole4.4 的话也是没问题的，不会有很大的区别。其它的工具，比如 Nginx、Redis 等，大家可以根据情况安装，我们在后续的课程中也会用到。
+
+
+
+扩展安装成功后，在 php.ini 文件中加上扩展信息，然后就可以通过下面的命令行查看 Swoole 的版本信息以及扩展配置情况。
+
+```bash
+[root]# php --ri swoole
+
+swoole
+
+Swoole => enabled
+Author => Swoole Team <team@swoole.com>
+Version => 4.8.10
+Built => Jul  8 2022 12:54:21
+coroutine => enabled with boost asm context
+epoll => enabled
+eventfd => enabled
+signalfd => enabled
+cpu_affinity => enabled
+spinlock => enabled
+rwlock => enabled
+pcre => enabled
+zlib => 1.2.11
+mutex_timedlock => enabled
+pthread_barrier => enabled
+futex => enabled
+async_redis => enabled
+
+Directive => Local Value => Master Value
+swoole.enable_coroutine => On => On
+swoole.enable_library => On => On
+swoole.enable_preemptive_scheduler => Off => Off
+swoole.display_errors => On => On
+swoole.use_shortname => On => On
+swoole.unixsock_buffer_size => 8388608 => 8388608
+
+
+[root]# php -v
+PHP 7.4.30 (cli) (built: Jul  8 2022 11:13:44) ( NTS )
+Copyright (c) The PHP Group
+Zend Engine v3.4.0, Copyright (c) Zend Technologies
+    with Xdebug v3.1.6, Copyright (c) 2002-2022, by Derick Rethans
 
 
 ```
+
+
+
+### 启动一个服务
+
+相信各位大佬对环境和扩展的安装都是没问题的，如果有问题的话，问我也没用，编译安装这些东西有很多玄学（懵逼）问题存在的，只能是多拿虚拟机练手玩了。环境安装成功后，我们就先来简单地搭建一个 Http 服务吧。
+
+
+
+什么？直接起一个 Http 服务？不是要用 Nginx 或者 Apache 吗？忘了上篇文章中我们说过的东西了吧，Swoole 是直接启动服务的，而不是像传统的 PHP 使用 FastCGI 来启动 php-fpm 这种形式的。或者，你也可以理解为直接使用 Swoole 启动的服务就是 php-fpm 使用连接形式启动的那个 9000 端口的服务。
+
+
+
+关于 php-fpm 相关的知识，我们之前在 **了解PHP-FPM** https://mp.weixin.qq.com/s/NUpDnfYfbPuWmal4Am3lsg 中有过详细的说明，大家可以回去看看哦。
+
+
+
+好了，让我们进入正题，先新一个文件，然后输入下面的代码。
+
+```php
+<?php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+$http->on('Request', function ($request, $response) {
+    echo "接收到了请求";
+    $response->header('Content-Type', 'text/html; charset=utf-8');
+    $response->end('<h1>Hello Swoole. #' . rand(1000, 9999) . '</h1>');
+});
+
+echo "服务启动";
+$http->start();
+```
+
+将它放到开启了 Swoole 环境的系统中，然后去执行命令行脚本运行它。
+
+```bash
+[root@localhost source]# php 2.1先把Swoole跑起来.php
+服务启动
+```
+
+
+
+一运行起来命令行就停住了，很明显，现在程序已经被挂载起来了。然后我们去浏览器访问页面，如果是本机的话，直接 http://localhost:9501 就可以了，如果是虚拟机，访问虚拟机的 IP 地址并加上端口号。注意，访问失败的话可以检查下有没有关掉防火墙。
+
+访问页面的结果可以看到如下截图。
+
+
+
+<img src="swoole课程.assets/image-20250708171354853.png" alt="image-20250708171354853" style="zoom:67%;" />
+
+同时，命令行中也会输出下面的内容。
+
+```
+[root@localhost source]# php 2.1先把Swoole跑起来.php
+服务启动接收到了请求
+```
+
+恭喜你，你的 Swoole 环境没有任何问题哦，现在一个最简单的 Http 服务器已经搭建成功啦！
+
+接下来，我们尝试修改一下文件内容，像上面的输出信息并没有换行，我们把换行符加上吧。
+
+```
+// .....
+    echo "接收到了请求", PHP_EOL;
+// .....
+
+echo "服务启动", PHP_EOL;
+```
+
+再次请求页面，你会发现命令行中输出的内容还是没有换行，这是为什么呢？
+
+
+
+还记得我们在上篇说过的动态语言与静态语言的问题吧，现在的 Swoole 其实就已经是类似静态语言的运行方式了。它已经将程序挂载起来成为一个独立的进程，其实这个时候就相当于已经编译成了一个类似于 jar 或者 exe 的文件，并且直接运行起来了。因此，我们修改文件是不会对当前进程中的程序产生任何影响的。如果要更新修改之后的内容，就需要重新启动服务。现在就 Ctrl+C 先关闭应用，然后再命令行执行一下吧。你会看到输出就会有换行了。
+
+```
+[root@localhost source]# php 2.1先把Swoole跑起来.php
+服务启动
+接收到了请求
+接收到了请求
+接收到了请求
+接收到了请求
+```
+
+
+
+### echo 为什么打印在命令行了
+
+相信不少同学又会有一个疑问，为什么 echo 被输出到命令行了？传统的 PHP 开发中，我们的 echo 是直接输出到页面了呀？
+
+
+
+这就是另一个 Swoole 与传统开发的不同。在 Swoole 中，我们的服务程序是使用命令行挂起的，我们上面的代码其实在内部是实现了一个 Http 服务功能，而不是通过 php-fpm 去输出给 Nginx 这种服务器的
+
+。转换一个角度来想，php-fpm 也只是把这些输出交给了服务器程序，然后由服务器程序原样给输出到页面上。但是在 Swoole 中，echo 之类的输出流是直接将结果发送到操作系统对应的 stdout 上了。
+
+相对应地，我们的**服务输出则是直接通过 Swoole 代码中的服务回调参数上的 response 对象来进行服务流输出过程（输出到网页上）**。
+
+
+
+这个地方的思维是需要大家转变一下的。如果你学习过 Java 开发的话对这里应该不会陌生，在 Swoole 环境下，echo（print、var_dump()等等）之类的传统输出就变成了 Java 中的 System.out.println() 。
+
+同样，在 Java 中，不管什么框架，你要输出页面上的结果值，也是通过类似于一个 Response 对象来实现的。其实，就只是将我们打印的内容输出到了不同的流上，普通的打印流到了 stdout 上，而 Response 对象则是通过 TCP 将结果输出到了响应流上。这一块的原理就很深了，至少得要更深入的学习网络相关的知识，可惜目前的我水平还达不到，所以有兴趣的小伙伴还是自己去查阅相关的资料吧！
+
+
+
+### 总结
+
+今天的学习内容不多，最主要的是我们先了解一下最简单的 Http 服务是如何跑起来的，以及在输出方面与传统开发模式的异同。当然，更重要的是，你现在得要把开发环境准备好。否则后续的内容就没法跟着一起实践了哦。
+
+
+
+## **【Swoole系列2.2】Http、TCP、UDP服务端**
+
+> https://www.zyblog.com.cn/article/266
+
+其实在上篇文章中，我们就已经运行起来了一个 Http 服务，也简单地说明了一下使用 Swoole 运行起来的服务与普通的 PHP 开发有什么区别。想必你现在会说这没什么大不了的呀，这些我们的传统开发又不是做不到，而且还更方便一些。在基础篇章中，我们还不会看到 Swoole 在性能上的优势，毕竟最基础的一些服务搭建还是要先了解清楚的。因此，今天我们将继续再深入的讲一下 Http 相关的内容以及了解一下 TCP、UDP 服务在 Swoole 中如何运行。
+
+
+
+### **http服务**
+
+我们还是看看上次的 Http 服务的代码。
+
+```php
 $http = new Swoole\Http\Server('0.0.0.0', 9501);
 $http->on('Request', function ($request, $response) {
     echo "接收到了请求", PHP_EOL;
@@ -34,35 +326,333 @@ echo "服务启动", PHP_EOL;
 $http->start();
 ```
 
+首先，我们实例化了一个 Server 对象，在这里我们传递了两个构造函数，一个是监听的 IP 地址，一个是端口号。一般情况下，如果是生产环境内网，我们建议使用内网的本机 IP ，或者直接就是 127.0.0.1 只允许本机访问。但是在我们的测试过程中，需要在虚拟机外访问的话，就需要 0.0.0.0 这样的监听全部 IP 地址。这一块相信不用我过多解释了，Linux 服务的基本知识，数据库、Redis、PHP-FPM 什么的都有这样的配置。
 
 
 
+接下来，使用 on() 函数，它是一个监听函数，用于监听指定的事件。在这里，我们监听的就是 Request 事件，监听到的内容将通过回调函数的参数返回，也就是第一个参数 $request ，然后它还会带一个 $response 参数用于返回响应事件。当使用 $response 参数的 end() 方法时，将响应输出指定的内容并结束当前的请求。
 
-
-
-on注册监听事件。。
+上述步骤就完成了一次普通的 Http 请求响应。
 
 
 
 #### **查看request参数**
 
-urlencoded的post请求【不加content请求头时的post默认方式】：
+接下来，我们尝试打印一下 $request 参数，看看里面都有什么。
+
+```php
+$http->on('Request', function ($request, $response) {
+    // .....
+
+    var_dump($request);
+
+    // ....
+});
+```
+
+在命令行的输出中，你会看到打印的结果，内容非常多
+
+```bash
+object(Swoole\Http\Request)#6 (8) {
+  ["fd"]=>
+  int(1)
+  ["header"]=>
+  array(7) {
+    ["host"]=>
+    string(19) "192.168.56.133:9501"
+    ["connection"]=>
+    string(10) "keep-alive"
+    ["upgrade-insecure-requests"]=>
+    string(1) "1"
+    ["user-agent"]=>
+    string(120) "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.55 Safari/537.36"
+    ["accept"]=>
+    string(135) "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"
+    ["accept-encoding"]=>
+    string(13) "gzip, deflate"
+    ["accept-language"]=>
+    string(23) "zh-CN,zh;q=0.9,en;q=0.8"
+  }
+  ["server"]=>
+  array(10) {
+    ["request_method"]=>
+    string(3) "GET"
+    ["request_uri"]=>
+    string(1) "/"
+    ["path_info"]=>
+    string(1) "/"
+    ["request_time"]=>
+    int(1639098961)
+    ["request_time_float"]=>
+    float(1639098961.89757)
+    ["server_protocol"]=>
+    string(8) "HTTP/1.1"
+    ["server_port"]=>
+    int(9501)
+    ["remote_port"]=>
+    int(54527)
+    ["remote_addr"]=>
+    string(12) "192.168.56.1"
+    ["master_time"]=>
+    int(1639098961)
+  }
+  ["cookie"]=>
+  NULL
+  ["get"]=>
+  NULL
+  ["files"]=>
+  NULL
+  ["post"]=>
+  NULL
+  ["tmpfiles"]=>
+  NULL
+}
+```
+
+发现什么了吗？有 header、server、cookie、get、post 等内容。这些是做什么用的呢？别急，再来测试一下，你可以尝试打印一下 `$_SERVER、$_REQUEST` 等相关的内容。同时为了方便查看，可以给请求链接增加一个 GET 参数，比如说这样请求：http://192.168.56.133:9501/?a=1 。
+
+```
+$http->on('Request', function ($request, $response) {
+    // .....
+
+    var_dump($request);
+    var_dump($_REQUEST);
+    var_dump($_SERVER);
+    // ....
+});
+```
+
+在你的命令行中，输出的结果应该是这样的。
+
+```bash
+// $request 输出
+object(Swoole\Http\Request)#6 (8) {
+  ["fd"]=>
+  int(1)
+  ["header"]=>
+  array(8) {
+    ["host"]=>
+    string(19) "192.168.56.133:9501"
+    ["connection"]=>
+    string(10) "keep-alive"
+    ["cache-control"]=>
+    string(9) "max-age=0"
+    ["upgrade-insecure-requests"]=>
+    string(1) "1"
+    ["user-agent"]=>
+    string(120) "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.55 Safari/537.36"
+    ["accept"]=>
+    string(135) "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"
+    ["accept-encoding"]=>
+    string(13) "gzip, deflate"
+    ["accept-language"]=>
+    string(23) "zh-CN,zh;q=0.9,en;q=0.8"
+  }
+  ["server"]=>
+  array(11) {
+    ["query_string"]=>
+    string(3) "a=1"
+    ["request_method"]=>
+    string(3) "GET"
+    ["request_uri"]=>
+    string(1) "/"
+    ["path_info"]=>
+    string(1) "/"
+    ["request_time"]=>
+    int(1639099269)
+    ["request_time_float"]=>
+    float(1639099269.109327)
+    ["server_protocol"]=>
+    string(8) "HTTP/1.1"
+    ["server_port"]=>
+    int(9501)
+    ["remote_port"]=>
+    int(54864)
+    ["remote_addr"]=>
+    string(12) "192.168.56.1"
+    ["master_time"]=>
+    int(1639099269)
+  }
+  ["cookie"]=>
+  NULL
+  ["get"]=>
+  array(1) {
+    ["a"]=>
+    string(1) "1"
+  }
+  ["files"]=>
+  NULL
+  ["post"]=>
+  NULL
+  ["tmpfiles"]=>
+  NULL
+}
+
+// $_REQUEST 输出
+array(0) {
+}
+
+// $_SERVER 输出
+array(38) {
+  ["LC_ALL"]=>
+  string(11) "en_US.UTF-8"
+  ["LS_COLORS"]=>
+  string(1779) "rs=0:di=38;5;33:ln=38;5;51:mh=00:pi=40;38;5;11:so=38;5;13:do=38;5;5:bd=48;5;232;38;5;11:cd=48;5;232;38;5;3:or=48;5;232;38;5;9:mi=01;05;37;41:su=48;5;196;38;5;15:sg=48;5;11;38;5;16:ca=48;5;196;38;5;226:tw=48;5;10;38;5;16:ow=48;5;10;38;5;21:st=48;5;21;38;5;15:ex=38;5;40:*.tar=38;5;9:*.tgz=38;5;9:*.arc=38;5;9:*.arj=38;5;9:*.taz=38;5;9:*.lha=38;5;9:*.lz4=38;5;9:*.lzh=38;5;9:*.lzma=38;5;9:*.tlz=38;5;9:*.txz=38;5;9:*.tzo=38;5;9:*.t7z=38;5;9:*.zip=38;5;9:*.z=38;5;9:*.dz=38;5;9:*.gz=38;5;9:*.lrz=38;5;9:*.lz=38;5;9:*.lzo=38;5;9:*.xz=38;5;9:*.zst=38;5;9:*.tzst=38;5;9:*.bz2=38;5;9:*.bz=38;5;9:*.tbz=38;5;9:*.tbz2=38;5;9:*.tz=38;5;9:*.deb=38;5;9:*.rpm=38;5;9:*.jar=38;5;9:*.war=38;5;9:*.ear=38;5;9:*.sar=38;5;9:*.rar=38;5;9:*.alz=38;5;9:*.ace=38;5;9:*.zoo=38;5;9:*.cpio=38;5;9:*.7z=38;5;9:*.rz=38;5;9:*.cab=38;5;9:*.wim=38;5;9:*.swm=38;5;9:*.dwm=38;5;9:*.esd=38;5;9:*.jpg=38;5;13:*.jpeg=38;5;13:*.mjpg=38;5;13:*.mjpeg=38;5;13:*.gif=38;5;13:*.bmp=38;5;13:*.pbm=38;5;13:*.pgm=38;5;13:*.ppm=38;5;13:*.tga=38;5;13:*.xbm=38;5;13:*.xpm=38;5;13:*.tif=38;5;13:*.tiff=38;5;13:*.png=38;5;13:*.svg=38;5;13:*.svgz=38;5;13:*.mng=38;5;13:*.pcx=38;5;13:*.mov=38;5;13:*.mpg=38;5;13:*.mpeg=38;5;13:*.m2v=38;5;13:*.mkv=38;5;13:*.webm=38;5;13:*.ogm=38;5;13:*.mp4=38;5;13:*.m4v=38;5;13:*.mp4v=38;5;13:*.vob=38;5;13:*.qt=38;5;13:*.nuv=38;5;13:*.wmv=38;5;13:*.asf=38;5;13:*.rm=38;5;13:*.rmvb=38;5;13:*.flc=38;5;13:*.avi=38;5;13:*.fli=38;5;13:*.flv=38;5;13:*.gl=38;5;13:*.dl=38;5;13:*.xcf=38;5;13:*.xwd=38;5;13:*.yuv=38;5;13:*.cgm=38;5;13:*.emf=38;5;13:*.ogv=38;5;13:*.ogx=38;5;13:*.aac=38;5;45:*.au=38;5;45:*.flac=38;5;45:*.m4a=38;5;45:*.mid=38;5;45:*.midi=38;5;45:*.mka=38;5;45:*.mp3=38;5;45:*.mpc=38;5;45:*.ogg=38;5;45:*.ra=38;5;45:*.wav=38;5;45:*.oga=38;5;45:*.opus=38;5;45:*.spx=38;5;45:*.xspf=38;5;45:"
+  ["SSH_CONNECTION"]=>
+  string(36) "192.168.56.1 54331 192.168.56.133 22"
+  ["LANG"]=>
+  string(11) "zh_CN.UTF-8"
+  ["HISTCONTROL"]=>
+  string(10) "ignoredups"
+  ["HOSTNAME"]=>
+  string(21) "localhost.localdomain"
+  ["XDG_SESSION_ID"]=>
+  string(1) "1"
+  ["USER"]=>
+  string(4) "root"
+  ["SELINUX_ROLE_REQUESTED"]=>
+  string(0) ""
+  ["PWD"]=>
+  string(25) "/home/www/2.基础/source"
+  ["HOME"]=>
+  string(5) "/root"
+  ["SSH_CLIENT"]=>
+  string(21) "192.168.56.1 54331 22"
+  ["SELINUX_LEVEL_REQUESTED"]=>
+  string(0) ""
+  ["PHP_HOME"]=>
+  string(14) "/usr/local/php"
+  ["SSH_TTY"]=>
+  string(10) "/dev/pts/0"
+  ["MAIL"]=>
+  string(20) "/var/spool/mail/root"
+  ["TERM"]=>
+  string(14) "xterm-256color"
+  ["SHELL"]=>
+  string(9) "/bin/bash"
+  ["SELINUX_USE_CURRENT_RANGE"]=>
+  string(0) ""
+  ["SHLVL"]=>
+  string(1) "1"
+  ["LANGUAGE"]=>
+  string(11) "en_US.UTF-8"
+  ["LOGNAME"]=>
+  string(4) "root"
+  ["DBUS_SESSION_BUS_ADDRESS"]=>
+  string(25) "unix:path=/run/user/0/bus"
+  ["XDG_RUNTIME_DIR"]=>
+  string(11) "/run/user/0"
+  ["PATH"]=>
+  string(78) "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/usr/local/php/bin:/root/bin"
+  ["HISTSIZE"]=>
+  string(4) "1000"
+  ["LESSOPEN"]=>
+  string(25) "||/usr/bin/lesspipe.sh %s"
+  ["OLDPWD"]=>
+  string(9) "/home/www"
+  ["_"]=>
+  string(22) "/usr/local/php/bin/php"
+  ["PHP_SELF"]=>
+  string(29) "2.2Http、TCP、UDP服务.php"
+  ["SCRIPT_NAME"]=>
+  string(29) "2.2Http、TCP、UDP服务.php"
+  ["SCRIPT_FILENAME"]=>
+  string(29) "2.2Http、TCP、UDP服务.php"
+  ["PATH_TRANSLATED"]=>
+  string(29) "2.2Http、TCP、UDP服务.php"
+  ["DOCUMENT_ROOT"]=>
+  string(0) ""
+  ["REQUEST_TIME_FLOAT"]=>
+  float(1639099267.431116)
+  ["REQUEST_TIME"]=>
+  int(1639099267)
+  ["argv"]=>
+  array(1) {
+    [0]=>
+    string(29) "2.2Http、TCP、UDP服务.php"
+  }
+  ["argc"]=>
+  int(1)
+}
+```
+
+这一下看出问题所在了吗？你会发现 **`$_REQUEST、$_SERVER` 这些之前传统 PHP 中的全局常量都无效了**。虽然 \$_SERVER 也输出了内容，但是请仔细看，这里 \$_SERVER 输出的是我们的命令行信息，不是我们请求过来的信息。除了这两个之外，`$_COOKIE、$_GET、$_POST、$_FILES、$_SESSION` 等等都是这种情况。那么这些内容要获取的话从哪里获取呢？相信大家也都看到了，**直接在 $request 参数中就有我们需要的内容**。
+
+<img src="swoole课程.assets/image-20250708174015849.png" alt="image-20250708174015849" style="zoom:50%;" />
 
 
+
+这一块又是一个需要我们转变思维的地方。**为什么这些全局变量不能使用了呢？最主要的原因一是进程隔离问题，二是常驻进程可能会导致的内存泄漏问题**。
+
+> #### 1. **进程隔离**
+>
+> - **传统 PHP-FPM**：每个请求都是独立的进程，超全局变量会随请求结束自动销毁。
+> - **Swoole**：Worker 进程常驻内存，多个请求复用同一个进程，如果使用全局变量会导致**数据污染**（前一个请求的数据泄漏到下一个请求）。
+>
+> #### 2. **内存泄漏风险**
+>
+> - 常驻进程中，全局变量不会自动重置，如果不手动清理，会持续占用内存，最终导致内存溢出。
+>
+> #### 3. **协程安全问题**
+>
+> - Swoole 的协程是轻量级线程，全局变量在协程切换时可能被覆盖，引发逻辑错误。
+
+
+
+
+
+关于**进程隔离**问题，我们可以这样来测。
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+$i = 1;
+
+$http->set([
+    'worker_num'=>2,
+]);
+
+$http->on('Request', function ($request, $response) {
+    global $i;
+    $response->end($i++);
+});
+
+$http->start();
+```
+
+注意我们的 $i 变量是放在监听函数外部的，它是一个针对当前 PHP 文件的全局变量。之后我们设置当前服务的 worker_num ，它的意思是启用两个 Worker 进程，其实也就是我们的工作进程。
+
+启动服务后可以查看当前的进程信息，可以看到有四条 php 进程，其中第一个是主进程，剩下三个是子进程，在子进程中，还有一个管理进程，最后两个就是我们创建的两个 Worker 进程。
+
+```
+[root@localhost ~]# ps -ef | grep php
+root      1675  1400  0 22:19 pts/0    00:00:00 php 2.2Http、TCP、UDP服务.php
+root      1676  1675  0 22:19 pts/0    00:00:00 php 2.2Http、TCP、UDP服务.php
+root      1678  1676  0 22:19 pts/0    00:00:00 php 2.2Http、TCP、UDP服务.php
+root      1679  1676  0 22:19 pts/0    00:00:00 php 2.2Http、TCP、UDP服务.php
+```
+
+接下来，开两个不同的浏览器访问吧，看看 $i 的输出会怎么样。是不是两个浏览器刷新的时候 $i 没有同步地增加呀（因为是进程隔离的，每个worker进程维护自己的内存），体会一下多进程的效果吧。
+
+另一方面运行起来的程序是完全一次性加载到内存当中的，所以这些**全局变量不会自动销毁**，我们的程序毕竟是在一直运行的。因此，如果**稍加不注意，就会出现内存泄露的问题**。
+
+
+
+综上所述，global 声明的变量、static 声明的静态变量、静态函数、PHP 原生的超全局变量都有非常大的风险，Swoole 直接干掉了默认的超全局变量，而我们如果要使用全局变量的话也有其它的处理方式。这个我们以后再说。
+
+
+
+
+
+x-www-form-urlencoded的post请求【不加content请求头时的post默认方式】：
 
 ```
 curl -X POST -H "Content-Type: application/x-www-form-urlencoded" -d "name=John+Doe&email=john.doe@example.com" http://9.135.32.165:9501/
 ```
 
-
-
-
-
 输出：
 
-
-
-```
+```bash
 /data/projects/swoole_test/swoole/2.基础/source/2.2Http、TCP、UDP服务.php:8:
 class Swoole\Http\Request#6 (8) {
   public $fd =>
@@ -121,19 +711,11 @@ class Swoole\Http\Request#6 (8) {
 }
 ```
 
-
-
-
-
-
-
 注：
 
 在 Swoole 中，$request->post 属性只能获取 Content-Type 为 application/x-www-form-urlencoded 或 multipart/form-data 的 POST 数据，无法获取 JSON 格式的 POST 数据，即请求头设置为 "Content-Type: application/json"。
 
 json格式的post请求：
-
-
 
 ```
 curl -X POST -H "Content-Type: application/json" -d '{"name": "John Doe", "email": "john.doe@example.com"}' http://9.135.32.165:9501/
@@ -141,15 +723,50 @@ curl -X POST -H "Content-Type: application/json" -d '{"name": "John Doe", "email
 
 
 
-
-
 如果需要获取 JSON 格式的 POST 数据，可以使用 **$request->rawContent() 方法**获取原始的请求内容，然后使用 json_decode() 函数将 JSON 字符串解码为 PHP 数组。
+
+例如：
+
+```php
+$http->on('Request', function ($request, $response) {
+    // 检查 Content-Type
+    if (strpos($request->header['content-type'], 'application/json') !== false) {
+        $jsonData = json_decode($request->rawContent(), true);
+        
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $response->end(json_encode(['error' => 'Invalid JSON']));
+            return;
+        }
+        
+        // 使用 $jsonData['name'] 访问数据
+        $response->end("Hello, " . $jsonData['name']);
+    } else {
+        // 处理普通表单数据
+        $name = $request->post['name'] ?? 'Guest';
+        $response->end("Hello, " . $name);
+    }
+});
+```
+
+
+
+```
+# JSON 请求
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"name":"John","age":30}' \
+     http://localhost:9501/
+
+# 表单请求（对比）
+curl -X POST -H "Content-Type: application/x-www-form-urlencoded" \
+     -d 'name=John&age=30' \
+     http://localhost:9501/
+```
+
+
 
 
 
 #### **$server服务器对象**
-
-
 
 ```
 $server = new Swoole\Http\Server('0.0.0.0', 9501);
@@ -157,12 +774,6 @@ $server->on('Request', function ($request, $response) use ($server) {
   echo json_encode($server) . "\n";
 });
 ```
-
-
-
-
-
-
 
 
 
@@ -207,10 +818,6 @@ $server->on('Request', function ($request, $response) use ($server) {
 
 
 
-
-
-
-
 #### **php全局变量不可用**
 
 $_REQUEST、$_SERVER 这些之前传统 PHP 中的全局常量都无效了，最主要的原因一是进程隔离问题，二是常驻进程可能会导致的内存泄漏问题。
@@ -219,9 +826,7 @@ $_REQUEST、$_SERVER 这些之前传统 PHP 中的全局常量都无效了，最
 
 #### **测试task异步任务**
 
-
-
-```
+```php
 //测试task异步任务
 $server = new Swoole\Http\Server('0.0.0.0', 9501); 
 $server->set(
@@ -252,25 +857,11 @@ $server->start();
 
 
 
-
-
-
-
-
-
 ```
 Task 0 has been dispatched
 Task 0 is processing
 Task 0 has been finished
 ```
-
-
-
-
-
-
-
-
 
 
 
@@ -284,9 +875,17 @@ dispatch_mode
 
 ### **tcp服务**
 
+对于 Http 服务我们又进行了一次复习，并且通过这个 Http 服务我们还看到了多进程程序的特点以及在开发时需要转变的一个重大的思维。
+
+当然，这些东西我们在后面会经常接触到。接下来，大家一起继续学习了解一下使用 Swoole 来搭建一个 TCP 服务端。
 
 
-```
+
+只要是学习过一点网络相关知识的同学肯定都知道，我们的 Http 服务本身就是建立在 TCP 的基础之上的。因此，其实要建立 TCP 服务的基本步骤和 Http 服务是没啥差别的。最主要的就是监听的内容不同。
+
+
+
+```php
 //创建Server对象，监听 9501 端口
  $server = new Swoole\Server('0.0.0.0', 9501);
 
@@ -309,15 +908,9 @@ dispatch_mode
  $server->start();
 ```
 
+相比原生的 PHP 的 socket 函数来说，Swoole 是不是清晰方便很多。我们启动服务之后，使用 telnet 命令行就可以对这个 TCP 服务器进行测试了。
 
-
-
-
-启动服务之后，使用 telnet 命令行就可以对这个 TCP 服务器进行测试了。
-
-
-
-```
+```bash
 # telnet 9.135.32.165 9501
 Trying 9.135.32.165...
 Connected to 9.135.32.165.
@@ -328,38 +921,32 @@ world
 Server TCP: world
 ```
 
-
-
-
+Swoole 中还有对应的 TCP 和 UDP 客户端，这个我们后面再说。
 
 
 
 ### **udp服务**
 
+UDP 和 TCP 的区别相信不用我多说了吧，这玩意不建立可靠连接的，但是速度快，所以现在的各种视频直播之类的应用全是建立在 UDP 之上的。可以说是支撑当前短视频和直播时代的基石了。
 
-
-```
+```php
 $server = new Swoole\Server('0.0.0.0', 9501, SWOOLE_PROCESS, SWOOLE_SOCK_UDP);
 
 //监听数据接收事件
 $server->on('Packet', function ($server, $data, $clientInfo) {
     var_dump($clientInfo);
-    $server->sendto($clientInfo['address'], $clientInfo['port'], "Server：{$data}");
+    $server->sendto($clientInfo['address'], $clientInfo['port'], "Server UDP：{$data}");
 });
 
 //启动服务器
 $server->start();
 ```
 
+写法也基本都是类似的，不同的还是监听的内容不同。由于它不建立连接，所以我们只需要监听接收到的数据包信息就可以了。
 
 
 
-
-
-
-
-
-```
+```bash
 nc -vu 9.135.32.165 9501
 Ncat: Version 7.70 ( https://nmap.org/ncat )
 Ncat: Connected to 9.135.32.165:9501.
@@ -367,19 +954,15 @@ hello world
 Server UDP：hello world
 ```
 
+补充：-u使用udp协议。。
+
+对于命令行的测试来说，我们也不能使用 telnet 了，在这里，我使用的也是 Linux 环境中比较常见的 nc 命令来进行测试的。
 
 
 
+客户端例子：
 
-
-
-
-
-例子：
-
-
-
-```
+```bash
 //server.php
 <?php
 $server = new Swoole\Server('0.0.0.0', 9502, SWOOLE_PROCESS, SWOOLE_SOCK_UDP);
@@ -421,13 +1004,7 @@ echo "Server Response: " . $response . "\n";
 
 
 
-
-
-
-
 ==>打印相关内容
-
-
 
 ```
 {
@@ -474,7 +1051,11 @@ echo "Server Response: " . $response . "\n";
 
 
 
+### 总结
 
+今天我们就是简单地先看一下在整个 Swoole 中，Http、TCP、UDP 服务是如何跑起来的，另外也尝试了一下多进程对于全局变量的影响。
+
+其实要学习 Swoole ，就不可避免地要学习到很多计算机相关的基础知识，如果你还没有这方面的准备的话，可以先看看操作系统、计算机组成原理相关的内容。毕竟我也不会讲得太详细，也达不到来讲这些基础理论知识的水平。所以，有相关的内容我也只能尽已所能地去稍带地提出，毕竟我自己也还是在不断学习这些基础的过程之中的。
 
 
 
@@ -1250,7 +1831,7 @@ Nginx 其实也是多进程的，当同一个进程中的程序如果有耗时�
 
 
 
-## 总结
+### 总结
 
 今天全是概念性的内容，参考的资料也非常多，这里就不一一列举了，反正就是百度来的，另外还包含一些我之前学过的 哈工大 操作系统 李治军 教授的这门慕课上的一些笔记。大家可以去学习一下哦，中国大学慕课上很多好的资源。之前我也一直说过，操作系统、数据结构、网络、设计模式 四大件是我们程序员的四大法宝，不说成为大神，但至少要都了解到。否则，你的进步会很慢，也很有限。
 
@@ -1258,39 +1839,391 @@ Nginx 其实也是多进程的，当同一个进程中的程序如果有耗时�
 
 
 
+## **【Swoole系列3.2】Swoole 异步进程服务系统**
+
+> https://www.zyblog.com.cn/article/768
+
+
+
+在了解了整个进程、线程、协程相关的知识后，我们再来看看在 Swoole 中是如何通过异步方式处理进程问题的，并且了解一下线程在 Swoole 中的作用。
+
+### Server两种运行模式
+
+其实在之前的测试代码中，我们就已经见到过这两种模式了，只是当时没说而已。
+
+不管是 Http 还是 TCP 等服务中，我们都有第三个参数的存在，默认情况下，它会赋值为一个 SWOOLE_PROCESS 参数，因此，如果是默认情况下我们一般不会写这个参数。而另外一种模式就是 SWOOLE_BASE 。
+
+> SWOOLE_BASE模式
+
+这种模式就是传统的**异步非阻塞模式**，它的效果和 Nginx 以及 Node.js 是完全一样的。
+
+在 Node.js 中，是通过一个主线线程来处理所有的请求，然后对 I/O 操作进行异步线程处理，避免创建、销毁线程以及线程切换的消耗。
+
+当 I/O 任务完成后，通过观察者执行指定的回调函数，并把这个完成的事件放到事件队列的尾部，等待事件循环。
+
+
+
+这个东西吧，要讲清楚，开一个大系列都不为过。但是如果你之前学习过一点 Node 的话，那么其实就很好理解。因为我们之前写的各种 Server 服务代码，其实和 Node 中写得基本完全一样。
+
+**都是一个事件，然后监听成功后在回调函数中写业务代码**。这就是**通过回调机制来实现的异步非阻塞模式**，将耗时操作放在回调函数中。有兴趣的同学可以去简单地学习一下 Node.js ，只要有 JS 基础，一两看看完一套入门教程就可以了。
+
+
+
+在 Swoole 的 SWOOLE_BASE 模式下，原理也是完全一样的。当一个请求进来的时候，所有的 Worker 都会争抢这一个连接，并最终会有一个 Worker 进程成功直接和客户端建立连接，之后这个连接中所有的数据收发直接和这个 Worker 通讯，**不再经过主进程的 Reactor 线程转发**。
 
 
 
 
 
+> SWOOLE_PROCESS模式
+
+SWOOLE_PROCESS 的所有客户端都是和主进程建立的，内部实现比较复杂，用了大量的进程间通信、进程管理机制。适合业务逻辑非常复杂的场景，因为它可以方便地进行进程间的互相通信。
 
 
 
+在 SWOOLE_PROCESS 中，所有的 Worker 不会去争抢连接，也不会让某一个连接与某个固定的 Worker 通讯，而是通过一个主进程进行连接。剩下的事件处理则交给不同的 Worker 去执行，当到达 Worker 之后，同样地也是使用回调方式进行处理了，后续内容基本就和 BASE 差不多了。也就是说，Worker 功能的不同是它和 SWOOLE_BASE 最大的差异，它实现了连接与数据请求的分离，不会因为某些连接数据量大某些量小导致 Worker 进程不均衡。**具体的方式就是在这种模式下，会多出来一个主管线程的进程**，其中还会有一个非常重要的 Reactor 线程，下面我们再详细说明。
 
 
 
+> 两种模式的异同与优缺点
+
+如果客户端之间不需要交互，也就是我们普通的 HTTP 服务的话，SWOOLE_BASE 模式是一个很好的选择，但是它除了 send() 和 close() 方法之外，不支持跨进程执行。但其实，**这两种模式在底层的处理上没什么太大的区别，都是走的异步IO机制。只是说它们的连接方式不同**。SWOOLE_BASE 的每个 Worker 都可以看成是 SWOOLE_PROCESS 的 Reactor 线程和 Worker 进程两部分的组合。
 
 
 
+我们可以来测试一下。
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501, SWOOLE_BASE);
+
+//$http = new Swoole\Http\Server('0.0.0.0', 9501, SWOOLE_PROCESS);
+
+$http->set([
+    'worker_num'=>2
+]);
+
+$http->on('Request', function ($request, $response) {
+    var_dump(func_get_args());
+    $response->end('开始测试');
+});
+
+$http->start();
+```
+
+通过切换上面两个注释，我们就可以查看两种服务运行模式的情况，可以通过 pstree -p 命令。
+
+在 SWOOLE_BASE 模式下，输出的内容是这样的。
+
+![image-20250707193608399](swoole课程.assets/image-20250707193608399.png)
+
+可以看到，在 1629 这个进程下面有两个子进程 1630 和 1631 。然后切换成 SWOOLE_PROCESS 模式，再查看进程情况。
+
+![image-20250707193704618](swoole课程.assets/image-20250707193704618.png)
+
+很明显，这里不一样了，在 1577 这个 Master 主进程下，有两个进程，一个是 1578 ，一个是 1579 它表示的是线程组，然后在 1578 Manager 管理进程下面，又有 1580 和 1581 两个 Worker 进程。
+
+同样地，我们使用之前在 **【Swoole教程2.5】异步任务**https://mp.weixin.qq.com/s/bQt9Ul-H34eUYw2-Qu-N0g 中的代码来测试，可以看到 Task 异步任务也是起的进程。（注意，我们在测试代码中设置的是 task_worker_num，没有设置 worker_num ，所以是 1个Worker + 4个 TaskWorker 进程，最后再加一个 PROCESS 模式的 线程组 ）如果如图所示。
+
+![image-20250707193902948](swoole课程.assets/image-20250707193902948.png)
+
+到这里，相信你也看出了，SWOOLE_BASE 比 SWOOLE_PROCESS 少了一层进程的递进，也就是少了一个层级。在 SWOOLE_BASE 模式下，没有 Master 进程，只有一个 Manager 进程，另外就是没有从 Master 中分出来的线程组。关于 Master/Manager/Reactor/TaskWorker 这些东西我们下一小节就会说到。
 
 
 
+BASE 模式因为更简单，所以不容易出错，它也没有 IPC 开销，而 PROCESS 模式有 2 次 IPC 开销，master 进程与 worker 进程需要 Unix Socket 进行通信。IPC 这东西就是同一台主机上两个进程间通信的简称。它一般有两种形式，一个是通过 Unix Socket 的方式，就是我们最常见的类似于 php-fcgi.sock 或者 mysql.sock 那种东西。另一种就是 sysvmsg 形式，这是 Linux 提供的一种消息队列，一般使用的比较少。
 
 
 
+当然，BASE 模式也有它自身存在的问题，主要也是因为上面讲过的特性。由于 Worker 是和连接绑定的，因此，某个 Worker 挂掉的话，这个 Worker 里面的所有连接都会被关闭。另外由于争抢的情况，Worker 进程无法实现均衡，有可能有些连接数据量小，负载也会非常低。最后，如果回调函数中阻塞操作，会导致 Server 退化为同步模式，容易导致 TCP 的 backlog 队列塞满。不过就像上面说过的，Http 这种无状态的不需要交互的连接，使用 BASE 没什么问题，而且效率也是非常 OK 的。当然，**既然默认情况下 Swoole 已经为我们提供的是 SWOOLE_PROCESS 进程了，那么也就说明 SWOOLE_PROCESS 模式是更加推荐的一种模式**。
 
 
 
+### 各种进程问题
+
+接下来，我们继续学习上面经常会提到的各种进程和线程问题。
+
+#### Master 进程
+
+它是一个多线程进程。用于管理线程，它会创建 Master 线程以及 Reactor 线程，并且还有心跳检测线程、UDP 收包线程等等。
 
 
 
+#### Reactor 线程
+
+这个线程我们不止一次提到了，它是在 Master 进程中创建的，负责客户端 TCP 连接、处理网络 IO 、处理协议、收发数据，它不执行任何 PHP 代码，用于将 TCP 客户端发来的数据缓冲、拼接、拆分成完整的一个请求数据包。我们在 Swoole 代码中操作不了线程，为什么呢？其实 PHP 本身就是不支持多线程的，Swoole 是一种多进程应用框架。在这里的线程是在底层用 C/C++ 封装好的。因此，也并没有为我们提供可以直接操作线程的接口。但我们已经学习过了，协程本身就是工作在线程之上的，而且，协程也已经是现在的主流方向了，所以在 Swoole 中，进程管理和协程，才是我们学习的重点。
 
 
 
+#### TaskWorker 进程
+
+它是接受收 Worker 进程投递过来的任务，处理任务后将结果返回给 Worker 进程，这种模式是同步阻塞的模式，同样它也是以多进程的方式运行的。
+
+#### Manager 进程
+
+这个进程主要负责创建、回收 Worker/TaskWorkder 进程。其实就是一个进程管理器。
+
+#### 它们的关系
+
+首先，我们先来看两张图，也是官网给出的图，并根据这两张图再来看看官网给出的例子。
+
+<img src="swoole课程.assets/image-20250707194256052.png" alt="image-20250707194256052" style="zoom:50%;" />
+
+第一张图主要是 Manager 和 Master 的功能。我们主要看第二张图。
+
+<img src="swoole课程.assets/image-20250707194325992.png" alt="image-20250707194325992" style="zoom: 80%;" />
+
+在这张图中，我们可以看到，Manager 进程创建、回收、管理最下面的 Worker 进程和 Task 进程。并且是通过操作系统的 fork() 函数创建的，这个东西如果学过操作系统的同学应该不会陌生，fork() 就是创建子进程的函数。子进程间通过 Unix Socket 或者 MQ 队列进行通信。如果你是 BASE 模式，那么就不会有 Master 进程，这个时候，每一个 Worker 进程自己会承担起 Reactor 的功能，接收、响应请求数据。
 
 
 
+如果你是使用的 PROCESS 模式，那么上面的 Master 进程就会创建各种线程，还记得那个大括号的线程组吧，这个可是 BASE 模式没有的。它用于处理请求响应问题，不用想，多线程方式对于连接请求来说效率会更高。这也是前面说过的两种模式的优缺点的具体体现。然后 Reactor 线程通过 Unix Socket 与 Worker 进行通讯，完成数据向 Worker 的转发与接收。
 
+
+
+我们用官网给出的例子来再说明一下它们之间的关系。Reactor 就是 nginx，Worker 就是 PHP-FPM 。Reactor 线程异步并行地处理网络请求，然后再转发给 Worker 进程中去处理。Reactor 和 Worker 间通过 Unix Socket 进行通信。
+
+
+
+在 PHP-FPM 的应用中，经常会将一个任务异步投递到 Redis 等队列中，并在后台启动一些 PHP 进程异步地处理这些任务。这个场景相信大家都不会陌生吧，比如说我们下了订单之后，在原生 PHP 环境下进行消息通知、邮件发送，我们都会直接将这种问题放到一个队列中，然后让后台跑起一个脚本去消费这些队列从而进行信息发送。而 Swoole 提供的 TaskWorker 则是一套更完整的方案，将任务的投递、队列、PHP 任务处理进程管理合为一体。通过底层提供的 API 可以非常简单地实现异步任务的处理。另外 TaskWorker 还可以在任务执行完成后，再返回一个结果反馈到 Worker。
+
+
+
+一个更通俗的比喻，假设 Server 就是一个工厂，那 Reactor 就是销售，接受客户订单。而 Worker 就是工人，当销售接到订单后，Worker 去工作生产出客户要的东西。而 TaskWorker 可以理解为行政人员，可以帮助 Worker 干些杂事，让 Worker 专心工作。
+
+
+
+上述内容需要好好理解，特别是对于我们些长年接触传统的 PHP-FPM 模式开发的同学来说，要转换思维很不容易。不过根据官方提供的例子，相信大家也能很快把这个弯转过来。普通的请求就是把我们的 Nginx+PHP-FPM 给结合起来了，而 Task 则是可以处理一些类似于消息队列的异步操作。
+
+
+
+### Swoole 服务运行流程
+
+最后，我们再来了解一下整体 Swoole 服务的运行流程，同样也是来自官网的图片。
+
+<img src="swoole课程.assets/image-20250707194411742.png" alt="image-20250707194411742" style="zoom: 67%;" />
+
+其实这个流程图和我们的代码流程非常类似。定义一个 Server 对象，使用 set() 方法设置参数，然后使用 on() 方法开始监听各种回调，最后 start() 方法启动服务。在服务启动之后，创建了 Manager 进程，如果是 PROCESS 模式的话，则是先创建一个 Master 进程，然后在 Master 之下创建 Manager 。接着，Manager 根据 worker_num 数量创建并管理相对应数量的 Worker 进程。其中，可以在 Worker 中创建异步的 task 进程。
+
+
+
+Reactor 线程在最外面处理请求响应问题，监听相对应的事件，并与 Worker 进行通信。如果是 BASE 模式，不存在 Reactor 线程，则是全部由 Worker 来解决，而且它与连接的关系是一对一的。
+
+### 总结
+
+又是让人晕头转向的一篇文章吧。在今天的学习中，最主要的其实还是一种思维的转变，那就是我们要通过多进程的方式来提供服务应用。而且这种模式其实并不陌生，Nginx+PHP-FPM 就是这种模式，只不过，PHP-FPM 本身就是一个进程管理工具，但它的效率以及实现方式都与 Swoole 略有差别。包括在 PHP8 之后的 JIT ，它就是通过 OPCahce 来实现的，也是在将大部分代码全部一次加载到内存中，就像 Swoole 一样节约每次 PHP-FPM 的全量加载问题从而提升性能。
+
+
+
+测试代码：[https://github.com/zhangyue0503/swoole/blob/main/3.Swoole%E8%BF%9B%E7%A8%8B/source/3.2Swoole%E5%BC%82%E6%AD%A5%E8%BF%9B%E7%A8%8B%E7%B3%BB%E7%BB%9F.php](https://github.com/zhangyue0503/swoole/blob/main/3.Swoole进程/source/3.2Swoole异步进程系统.php)
+
+参考文档：
+
+https://wiki.swoole.com/#/server/init
+
+https://wiki.swoole.com/#/learn?id=process-diff
+
+
+
+## 补充
+
+### 共享内存
+
+在 Swoole 中，**默认情况下 Worker 进程是隔离的**，每个 Worker 有独立的内存空间。如果想让所有 Worker 共享数据，需要使用 **跨进程共享机制**有以下几种方式：
+
+#### **1. 使用 `Swoole\Atomic`（原子计数器）**
+
+**适用场景**：简单的计数器、标志位等
+​**​特点​**​：
+
+- 原子操作（线程/进程安全）
+- 仅支持整数
+- 高性能（无锁）
+
+**示例代码**
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+// 定义一个全局 Atomic 计数器
+$counter = new Swoole\Atomic(0);
+
+$http->on('Request', function ($request, $response) use ($counter) {
+    $count = $counter->add(1); // 原子递增
+    $response->end("Global Count: " . $count);
+});
+
+$http->start();
+```
+
+**输出**：
+
+```
+Global Count: 1
+Global Count: 2
+Global Count: 3
+...
+```
+
+所有 Worker 共享 `$counter`，计数会连续递增。
+
+
+
+#### **2. 使用 `Swoole\Table`（共享内存表）**
+
+**适用场景**：需要共享复杂数据（数组、KV 存储）
+​**​特点​**​：
+
+- 支持 `int`、`float`、`string` 类型
+- 类似 PHP 数组的操作方式
+- 适用于多进程共享配置、Session 等
+
+**示例代码**
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+// 创建共享内存表
+$table = new Swoole\Table(1024); // 1024 行
+$table->column('count', Swoole\Table::TYPE_INT); // 整数字段
+$table->column('name', Swoole\Table::TYPE_STRING, 64); // 字符串字段
+$table->create();
+
+// 初始化数据
+$table->set('global', ['count' => 0, 'name' => 'Swoole']);
+
+$http->on('Request', function ($request, $response) use ($table) {
+    // 原子递增
+    $table->incr('global', 'count');
+    
+    // 获取当前值
+    $data = $table->get('global');
+    $response->end("Count: {$data['count']}, Name: {$data['name']}");
+});
+
+$http->start();
+```
+
+**输出**：
+
+```
+Count: 1, Name: Swoole
+Count: 2, Name: Swoole
+Count: 3, Name: Swoole
+...
+```
+
+所有 Worker 共享 `$table` 数据。
+
+------
+
+#### **3. 使用 `Redis` / `APCu`（外部存储）**
+
+**适用场景**：
+
+- 需要持久化存储
+- 多机共享数据
+- 复杂数据结构（如哈希、集合）
+
+**示例（Redis）**
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+$redis = new Redis();
+$redis->connect('127.0.0.1', 6379);
+
+$http->on('Request', function ($request, $response) use ($redis) {
+    $count = $redis->incr('global_counter');
+    $response->end("Redis Count: " . $count);
+});
+
+$http->start();
+```
+
+**输出**：
+
+```
+Redis Count: 1
+Redis Count: 2
+Redis Count: 3
+...
+```
+
+所有 Worker 共享 Redis 数据。
+
+------
+
+#### **4. 使用 `shmop`（共享内存扩展）**
+
+**适用场景**：
+
+- 需要更底层的共享内存操作
+- 高性能 IPC（进程间通信）
+
+**示例**
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+// 创建共享内存块
+$shmKey = ftok(__FILE__, 't');
+$shmId = shmop_open($shmKey, "c", 0644, 128);
+
+$http->on('Request', function ($request, $response) use ($shmId) {
+    // 读取共享内存
+    $count = (int) shmop_read($shmId, 0, 10);
+    $count++;
+    
+    // 写入共享内存
+    shmop_write($shmId, (string) $count, 0);
+    
+    $response->end("Shared Memory Count: " . $count);
+});
+
+$http->start();
+```
+
+**注意**：`shmop` 需要手动管理内存，容易出错，建议优先使用 `Swoole\Table` 或 `Redis`。
+
+------
+
+#### **5. 使用 `Swoole\Process` + `msgpack`（进程通信）**
+
+**适用场景**：
+
+- 需要自定义进程间通信
+- 复杂数据交换
+
+### **示例**
+
+```php
+$http = new Swoole\Http\Server('0.0.0.0', 9501);
+
+// 创建 Unix Socket 通信
+$process = new Swoole\Process(function ($worker) {
+    $count = 0;
+    while (true) {
+        $data = $worker->read();
+        $count++;
+        $worker->write($count);
+    }
+}, false, 2); // 2 = SOCK_DGRAM
+
+$process->start();
+
+$http->on('Request', function ($request, $response) use ($process) {
+    $process->write("increment");
+    $count = $process->read();
+    $response->end("Process IPC Count: " . $count);
+});
+
+$http->start();
+```
+
+**说明**：
+
+- 这种方式适用于 **复杂 IPC 场景**，但性能低于 `Swoole\Table` 和 `Redis`。
+
+<img src="swoole课程.assets/image-20250708183101678.png" alt="image-20250708183101678" style="zoom: 50%;" />
 
 # 其他
 
@@ -1411,4 +2344,8 @@ pm = dynamic             # 进程管理方式
 - **解决 C10K 问题**：通过进程复用支撑高并发。
 - **安全性**：隔离 Web 服务器与后端程序（避免直接执行 CGI 脚本）。
 - **灵活性**：支持分布式部署（Web 服务器与后端程序可分离）。
+
+
+
+
 
